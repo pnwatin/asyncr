@@ -1,129 +1,372 @@
-use std::{
-    collections::VecDeque,
-    pin::Pin,
-    task::{Context, Waker},
-};
+use std::sync::{Arc, mpsc};
 
-type Task = Pin<Box<dyn Future<Output = ()>>>;
+use crate::task::Task;
 
-#[derive(Default)]
 pub struct Runtime {
-    tasks: VecDeque<Task>,
+    ready_queue: mpsc::Receiver<Arc<Task>>,
+    sender: mpsc::Sender<Arc<Task>>,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        Self::default()
-    }
+        let (sender, ready_queue) = mpsc::channel();
 
-    pub fn spawn<F>(&mut self, fut: F)
-    where
-        F: Future<Output = ()> + 'static,
-    {
-        self.tasks.push_back(Box::pin(fut));
-    }
-
-    pub fn run(&mut self) {
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-
-        while let Some(mut task) = self.tasks.pop_front() {
-            if task.as_mut().poll(&mut cx).is_pending() {
-                self.tasks.push_back(task);
-            }
+        Self {
+            ready_queue,
+            sender,
         }
+    }
+
+    pub fn spawn<F>(&self, fut: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        Task::spawn(fut, &self.sender);
+    }
+
+    pub fn run(self) {
+        drop(self.sender);
+        while let Ok(task) = self.ready_queue.recv() {
+            task.poll_once();
+        }
+    }
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc, task::Poll};
+    use std::{
+        future::poll_fn,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+            mpsc::channel,
+        },
+        task::{Poll, Waker},
+        thread,
+        time::Duration,
+    };
 
     use super::*;
 
     #[test]
-    fn runtime_polls_pending_tasks_in_fifo_order_until_complete() {
-        let shared_trace = SharedTrace::default();
+    fn spawned_task_is_initially_ready_but_not_repolled_without_wake() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let mut runtime = Runtime::default();
 
-        let mut runtime = Runtime::new();
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
 
-        runtime.spawn(TraceFut::new("A", shared_trace.clone(), 1));
-        runtime.spawn(TraceFut::new("B", shared_trace.clone(), 2));
+            poll_fn(move |_| {
+                polls.fetch_add(1, Ordering::SeqCst);
+                Poll::<()>::Pending
+            })
+        });
 
-        runtime.run();
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
 
-        assert_eq!(shared_trace.borrow().as_slice(), &["A", "B", "A", "B", "B"]);
+        assert_eq!(run_until_stalled(&mut runtime), 0);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn waking_idle_task_make_it_ready_again() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let stored_waker = Arc::new(Mutex::new(None::<Waker>));
+        let mut runtime = Runtime::default();
+
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
+            let stored_waker = Arc::clone(&stored_waker);
+
+            poll_fn(move |cx| {
+                let poll = polls.fetch_add(1, Ordering::SeqCst);
+
+                if poll == 0 {
+                    *stored_waker.lock().unwrap() = Some(cx.waker().clone());
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+        });
+
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+
+        stored_waker.lock().unwrap().take().unwrap().wake();
+
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+
+        assert_eq!(run_until_stalled(&mut runtime), 0);
+    }
+
+    #[test]
+    fn wake_during_poll_schedules_another_poll() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let mut runtime = Runtime::default();
+
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
+
+            poll_fn(move |cx| {
+                let poll = polls.fetch_add(1, Ordering::SeqCst);
+
+                if poll == 0 {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+        });
+
+        assert_eq!(run_until_stalled(&mut runtime), 2);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn multiple_wakes_during_poll_are_collapsed() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let mut runtime = Runtime::default();
+
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
+
+            poll_fn(move |cx| {
+                let poll = polls.fetch_add(1, Ordering::SeqCst);
+
+                if poll == 0 {
+                    cx.waker().wake_by_ref();
+                    cx.waker().wake_by_ref();
+                    cx.waker().wake_by_ref();
+
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+        });
+
+        assert_eq!(run_until_stalled(&mut runtime), 2);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn multiple_wakes_of_idle_task_are_collapsed() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let stored_waker = Arc::new(Mutex::new(None::<Waker>));
+        let mut runtime = Runtime::default();
+
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
+            let stored_waker = Arc::clone(&stored_waker);
+
+            poll_fn(move |cx| {
+                polls.fetch_add(1, Ordering::SeqCst);
+
+                *stored_waker.lock().unwrap() = Some(cx.waker().clone());
+
+                Poll::Pending
+            })
+        });
+
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+
+        let waker = stored_waker.lock().unwrap().clone().unwrap();
+
+        waker.wake_by_ref();
+        waker.wake_by_ref();
+        waker.wake_by_ref();
+
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn waking_completed_task_does_not_poll_it_again() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let stored_waker = Arc::new(Mutex::new(None::<Waker>));
+        let mut runtime = Runtime::default();
+
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
+            let stored_waker = Arc::clone(&stored_waker);
+
+            poll_fn(move |cx| {
+                let poll = polls.fetch_add(1, Ordering::SeqCst);
+
+                if poll == 0 {
+                    *stored_waker.lock().unwrap() = Some(cx.waker().clone());
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+        });
+
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+
+        let waker = stored_waker.lock().unwrap().clone().unwrap();
+
+        waker.wake_by_ref();
+
+        assert_eq!(run_until_stalled(&mut runtime), 1);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+
+        waker.wake_by_ref();
+
+        assert_eq!(run_until_stalled(&mut runtime), 0);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn run_waits_for_pending_task_and_resumes_after_wake() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let runtime = Runtime::default();
+
+        let (first_poll_tx, first_poll_rx) = channel::<Waker>();
+        let (return_tx, return_rx) = channel::<()>();
+
+        runtime.spawn({
+            let polls = Arc::clone(&polls);
+            let first_poll_tx = first_poll_tx.clone();
+
+            poll_fn(move |cx| {
+                let poll = polls.fetch_add(1, Ordering::SeqCst);
+
+                if poll == 0 {
+                    let _ = first_poll_tx.send(cx.waker().clone());
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+        });
+
+        drop(first_poll_tx);
+
+        let thread_tx = return_tx.clone();
+
+        let handle = std::thread::spawn(move || {
+            runtime.run();
+            let _ = thread_tx.send(());
+        });
+
+        drop(return_tx);
+
+        let waker = first_poll_rx.recv().unwrap();
+
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            return_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        waker.wake();
+
+        assert_eq!(return_rx.recv_timeout(Duration::from_millis(100)), Ok(()));
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn ready_tasks_are_polled_in_fifo_order() {
+        // WARN: this might go away once we implement multi-threaded system
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = Runtime::default();
+
+        runtime.spawn({
+            let trace = Arc::clone(&trace);
+            let mut remaining = 1;
+
+            poll_fn(move |cx| {
+                trace.lock().unwrap().push('A');
+
+                if remaining == 0 {
+                    Poll::Ready(())
+                } else {
+                    remaining -= 1;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            })
+        });
+
+        runtime.spawn({
+            let trace = Arc::clone(&trace);
+            let mut remaining = 2;
+
+            poll_fn(move |cx| {
+                trace.lock().unwrap().push('B');
+
+                if remaining == 0 {
+                    Poll::Ready(())
+                } else {
+                    remaining -= 1;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            })
+        });
+
+        assert_eq!(run_until_stalled(&mut runtime), 5);
+        assert_eq!(trace.lock().unwrap().as_slice(), &['A', 'B', 'A', 'B', 'B']);
     }
 
     #[test]
     fn async_task_resumes_after_awaited_future_completes() {
-        let shared_trace = SharedTrace::default();
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = Runtime::default();
 
-        let mut runtime = Runtime::new();
+        runtime.spawn({
+            let trace = Arc::clone(&trace);
 
-        let trace = shared_trace.clone();
+            async move {
+                trace.lock().unwrap().push("outer:start");
 
-        runtime.spawn(async move {
-            record(&trace, "outer:start");
-            let fut = TraceFut::new("A", trace.clone(), 1);
+                let mut remaining = 1;
 
-            fut.await;
-            record(&trace, "outer:end");
+                poll_fn(|cx| {
+                    trace.lock().unwrap().push("inner");
+
+                    if remaining == 0 {
+                        Poll::Ready(())
+                    } else {
+                        remaining -= 1;
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                })
+                .await;
+
+                trace.lock().unwrap().push("outer:end");
+            }
         });
 
-        runtime.run();
-
+        assert_eq!(run_until_stalled(&mut runtime), 2);
         assert_eq!(
-            shared_trace.borrow().as_slice(),
-            &["outer:start", "A", "A", "outer:end"]
+            trace.lock().unwrap().as_slice(),
+            &["outer:start", "inner", "inner", "outer:end"]
         );
     }
 
-    type SharedTrace = Rc<RefCell<Vec<&'static str>>>;
+    fn run_until_stalled(runtime: &mut Runtime) -> usize {
+        let mut executed = 0;
 
-    fn record(trace: &SharedTrace, event: &'static str) {
-        trace.borrow_mut().push(event);
-    }
-
-    struct TraceFut {
-        label: &'static str,
-        shared_trace: SharedTrace,
-        completed: bool,
-        pending_polls_remaining: u32,
-    }
-
-    impl Future for TraceFut {
-        type Output = ();
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
-            let this = self.get_mut();
-
-            assert!(!this.completed, "a completed future was polled again");
-
-            record(&this.shared_trace, this.label);
-
-            if this.pending_polls_remaining == 0 {
-                this.completed = true;
-                return Poll::Ready(());
-            }
-
-            this.pending_polls_remaining -= 1;
-            cx.waker().wake_by_ref();
-            Poll::Pending
+        while let Ok(task) = runtime.ready_queue.try_recv() {
+            task.poll_once();
+            executed += 1;
         }
-    }
 
-    impl TraceFut {
-        fn new(
-            label: &'static str,
-            shared_trace: SharedTrace,
-            pending_polls_remaining: u32,
-        ) -> Self {
-            Self {
-                label,
-                shared_trace,
-                pending_polls_remaining,
-                completed: false,
-            }
-        }
+        executed
     }
 }

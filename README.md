@@ -42,14 +42,14 @@ can make progress and why a completed future must never be polled again.
 Concept: `Pending` means "poll me after I signal readiness," not "poll me
 continuously."
 
-- [ ] Make a task capable of scheduling itself through a `Waker`.
-- [ ] Build a safe waker with `std::task::Wake` before studying `RawWaker`.
-- [ ] Replace unconditional requeueing with a ready queue.
-- [ ] Let the executor block while the ready queue is empty.
-- [ ] Handle wake-before-sleep without losing the notification.
-- [ ] Handle wakeups during polling and harmless spurious wakeups.
-- [ ] Prevent duplicate queue entries without losing a real wakeup.
-- [ ] Test that a pending task is not polled until it wakes.
+- [x] Make a task capable of scheduling itself through a `Waker`.
+- [x] Build a safe waker with `std::task::Wake` before studying `RawWaker`.
+- [x] Replace unconditional requeueing with a ready queue.
+- [x] Let the executor block while the ready queue is empty.
+- [x] Handle wake-before-sleep without losing the notification.
+- [x] Handle wakeups during polling and harmless spurious wakeups.
+- [x] Prevent duplicate queue entries without losing a real wakeup.
+- [x] Test that a pending task is not polled until it wakes.
 
 Completion check: trace one task from `poll` to `Pending`, through `wake`, back
 into the queue, and into its next `poll`.
