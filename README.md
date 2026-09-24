@@ -58,15 +58,15 @@ into the queue, and into its next `poll`.
 
 Concept: a task is a future plus runtime-owned lifecycle and scheduling state.
 
-- [ ] Separate the task harness from the future it owns.
-- [ ] Allow a running task to spawn another task through a clonable handle.
-- [ ] Add `block_on` for one root future that returns a value.
-- [ ] Return task results through a `JoinHandle` future.
-- [ ] Define whether dropping a `JoinHandle` detaches or cancels its task.
-- [ ] Decide how task panics are represented and observed.
-- [ ] Remove unnecessary `Send` bounds from the single-threaded runtime and
+- [x] Separate the task harness from the future it owns.
+- [x] Allow a running task to spawn another task through a clonable handle.
+- [x] Add `block_on` for one root future that returns a value.
+- [x] Return task results through a `JoinHandle` future.
+- [x] Define whether dropping a `JoinHandle` detaches or cancels its task.
+- [x] Decide how task panics are represented and observed.
+- [x] Remove unnecessary `Send` bounds from the single-threaded runtime and
   demonstrate a valid `!Send` task.
-- [ ] Test spawning, joining, detachment, and executor shutdown conditions.
+- [x] Test spawning, joining, detachment, and executor shutdown conditions.
 
 Completion check: distinguish the lifetime of a future, its task, its join
 handle, and the runtime that owns scheduling.

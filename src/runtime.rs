@@ -1,34 +1,27 @@
-use std::sync::{Arc, mpsc};
-
-use crate::task::Task;
+use crate::{executor::Executor, handle::Handle};
 
 pub struct Runtime {
-    ready_queue: mpsc::Receiver<Arc<Task>>,
-    sender: mpsc::Sender<Arc<Task>>,
+    executor: Executor,
+    handle: Handle,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        let (sender, ready_queue) = mpsc::channel();
+        let (executor, spawn_state) = Executor::new();
+        let handle = Handle { spawn_state };
 
-        Self {
-            ready_queue,
-            sender,
-        }
+        Self { executor, handle }
     }
 
-    pub fn spawn<F>(&self, fut: F)
+    pub fn handle(&self) -> Handle {
+        self.handle.clone()
+    }
+
+    pub fn block_on<F>(&mut self, future: F) -> F::Output
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future,
     {
-        Task::spawn(fut, &self.sender);
-    }
-
-    pub fn run(self) {
-        drop(self.sender);
-        while let Ok(task) = self.ready_queue.recv() {
-            task.poll_once();
-        }
+        self.executor.block_on(future)
     }
 }
 
@@ -43,330 +36,181 @@ mod tests {
     use std::{
         future::poll_fn,
         sync::{
-            Mutex,
-            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc::channel,
         },
-        task::{Poll, Waker},
+        task::Poll,
         thread,
-        time::Duration,
     };
 
     use super::*;
 
     #[test]
-    fn spawned_task_is_initially_ready_but_not_repolled_without_wake() {
-        let polls = Arc::new(AtomicUsize::new(0));
+    fn block_on_returns_root_output() {
         let mut runtime = Runtime::default();
 
-        runtime.spawn({
-            let polls = Arc::clone(&polls);
+        let result = runtime.block_on(async { 42 });
 
-            poll_fn(move |_| {
-                polls.fetch_add(1, Ordering::SeqCst);
-                Poll::<()>::Pending
-            })
-        });
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-        assert_eq!(polls.load(Ordering::SeqCst), 1);
-
-        assert_eq!(run_until_stalled(&mut runtime), 0);
-        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(result, 42);
     }
 
     #[test]
-    fn waking_idle_task_make_it_ready_again() {
-        let polls = Arc::new(AtomicUsize::new(0));
-        let stored_waker = Arc::new(Mutex::new(None::<Waker>));
-        let mut runtime = Runtime::default();
-
-        runtime.spawn({
-            let polls = Arc::clone(&polls);
-            let stored_waker = Arc::clone(&stored_waker);
-
-            poll_fn(move |cx| {
-                let poll = polls.fetch_add(1, Ordering::SeqCst);
-
-                if poll == 0 {
-                    *stored_waker.lock().unwrap() = Some(cx.waker().clone());
-                    Poll::Pending
-                } else {
-                    Poll::Ready(())
-                }
-            })
-        });
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-        assert_eq!(polls.load(Ordering::SeqCst), 1);
-
-        stored_waker.lock().unwrap().take().unwrap().wake();
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-
-        assert_eq!(run_until_stalled(&mut runtime), 0);
-    }
-
-    #[test]
-    fn wake_during_poll_schedules_another_poll() {
+    fn block_on_repolls_root_after_wake_during_poll() {
         let polls = Arc::new(AtomicUsize::new(0));
         let mut runtime = Runtime::default();
 
-        runtime.spawn({
+        let root = {
             let polls = Arc::clone(&polls);
 
             poll_fn(move |cx| {
-                let poll = polls.fetch_add(1, Ordering::SeqCst);
-
-                if poll == 0 {
+                if polls.fetch_add(1, Ordering::SeqCst) == 0 {
                     cx.waker().wake_by_ref();
                     Poll::Pending
                 } else {
-                    Poll::Ready(())
+                    Poll::Ready(42)
                 }
             })
-        });
+        };
 
-        assert_eq!(run_until_stalled(&mut runtime), 2);
+        let result = runtime.block_on(root);
+
+        assert_eq!(result, 42);
         assert_eq!(polls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
-    fn multiple_wakes_during_poll_are_collapsed() {
+    fn block_on_waits_for_external_root_wake() {
+        let (waker_tx, waker_rx) = channel();
         let polls = Arc::new(AtomicUsize::new(0));
         let mut runtime = Runtime::default();
 
-        runtime.spawn({
+        let root = {
             let polls = Arc::clone(&polls);
 
             poll_fn(move |cx| {
-                let poll = polls.fetch_add(1, Ordering::SeqCst);
-
-                if poll == 0 {
-                    cx.waker().wake_by_ref();
-                    cx.waker().wake_by_ref();
-                    cx.waker().wake_by_ref();
-
+                if polls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let _ = waker_tx.send(cx.waker().clone());
                     Poll::Pending
                 } else {
-                    Poll::Ready(())
+                    Poll::Ready(42)
                 }
             })
-        });
+        };
 
-        assert_eq!(run_until_stalled(&mut runtime), 2);
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn multiple_wakes_of_idle_task_are_collapsed() {
-        let polls = Arc::new(AtomicUsize::new(0));
-        let stored_waker = Arc::new(Mutex::new(None::<Waker>));
-        let mut runtime = Runtime::default();
-
-        runtime.spawn({
-            let polls = Arc::clone(&polls);
-            let stored_waker = Arc::clone(&stored_waker);
-
-            poll_fn(move |cx| {
-                polls.fetch_add(1, Ordering::SeqCst);
-
-                *stored_waker.lock().unwrap() = Some(cx.waker().clone());
-
-                Poll::Pending
-            })
-        });
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-
-        let waker = stored_waker.lock().unwrap().clone().unwrap();
-
-        waker.wake_by_ref();
-        waker.wake_by_ref();
-        waker.wake_by_ref();
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn waking_completed_task_does_not_poll_it_again() {
-        let polls = Arc::new(AtomicUsize::new(0));
-        let stored_waker = Arc::new(Mutex::new(None::<Waker>));
-        let mut runtime = Runtime::default();
-
-        runtime.spawn({
-            let polls = Arc::clone(&polls);
-            let stored_waker = Arc::clone(&stored_waker);
-
-            poll_fn(move |cx| {
-                let poll = polls.fetch_add(1, Ordering::SeqCst);
-
-                if poll == 0 {
-                    *stored_waker.lock().unwrap() = Some(cx.waker().clone());
-                    Poll::Pending
-                } else {
-                    Poll::Ready(())
-                }
-            })
-        });
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-        assert_eq!(polls.load(Ordering::SeqCst), 1);
-
-        let waker = stored_waker.lock().unwrap().clone().unwrap();
-
-        waker.wake_by_ref();
-
-        assert_eq!(run_until_stalled(&mut runtime), 1);
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-
-        waker.wake_by_ref();
-
-        assert_eq!(run_until_stalled(&mut runtime), 0);
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn run_waits_for_pending_task_and_resumes_after_wake() {
-        let polls = Arc::new(AtomicUsize::new(0));
-        let runtime = Runtime::default();
-
-        let (first_poll_tx, first_poll_rx) = channel::<Waker>();
-        let (return_tx, return_rx) = channel::<()>();
-
-        runtime.spawn({
-            let polls = Arc::clone(&polls);
-            let first_poll_tx = first_poll_tx.clone();
-
-            poll_fn(move |cx| {
-                let poll = polls.fetch_add(1, Ordering::SeqCst);
-
-                if poll == 0 {
-                    let _ = first_poll_tx.send(cx.waker().clone());
-                    Poll::Pending
-                } else {
-                    Poll::Ready(())
-                }
-            })
-        });
-
-        drop(first_poll_tx);
-
-        let thread_tx = return_tx.clone();
-
-        let handle = std::thread::spawn(move || {
-            runtime.run();
-            let _ = thread_tx.send(());
-        });
-
-        drop(return_tx);
-
-        let waker = first_poll_rx.recv().unwrap();
-
-        assert_eq!(polls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            return_rx.recv_timeout(Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        );
-
-        waker.wake();
-
-        assert_eq!(return_rx.recv_timeout(Duration::from_millis(100)), Ok(()));
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn ready_tasks_are_polled_in_fifo_order() {
-        // WARN: this might go away once we implement multi-threaded system
-        let trace = Arc::new(Mutex::new(Vec::new()));
-        let mut runtime = Runtime::default();
-
-        runtime.spawn({
-            let trace = Arc::clone(&trace);
-            let mut remaining = 1;
-
-            poll_fn(move |cx| {
-                trace.lock().unwrap().push('A');
-
-                if remaining == 0 {
-                    Poll::Ready(())
-                } else {
-                    remaining -= 1;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-            })
-        });
-
-        runtime.spawn({
-            let trace = Arc::clone(&trace);
-            let mut remaining = 2;
-
-            poll_fn(move |cx| {
-                trace.lock().unwrap().push('B');
-
-                if remaining == 0 {
-                    Poll::Ready(())
-                } else {
-                    remaining -= 1;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-            })
-        });
-
-        assert_eq!(run_until_stalled(&mut runtime), 5);
-        assert_eq!(trace.lock().unwrap().as_slice(), &['A', 'B', 'A', 'B', 'B']);
-    }
-
-    #[test]
-    fn async_task_resumes_after_awaited_future_completes() {
-        let trace = Arc::new(Mutex::new(Vec::new()));
-        let mut runtime = Runtime::default();
-
-        runtime.spawn({
-            let trace = Arc::clone(&trace);
-
-            async move {
-                trace.lock().unwrap().push("outer:start");
-
-                let mut remaining = 1;
-
-                poll_fn(|cx| {
-                    trace.lock().unwrap().push("inner");
-
-                    if remaining == 0 {
-                        Poll::Ready(())
-                    } else {
-                        remaining -= 1;
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
-                    }
-                })
-                .await;
-
-                trace.lock().unwrap().push("outer:end");
+        let helper = thread::spawn(move || match waker_rx.recv() {
+            Ok(waker) => waker.wake(),
+            _ => {
+                unreachable!("waker_tx should not be dropped at this point");
             }
         });
 
-        assert_eq!(run_until_stalled(&mut runtime), 2);
+        let result = runtime.block_on(root);
+
+        helper.join().unwrap();
+
+        assert_eq!(result, 42);
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn block_on_drives_spawned_task_joined_by_root() {
+        let mut runtime = Runtime::default();
+        let handle = runtime.handle();
+        let child = handle.spawn(async { 42 });
+
+        let result = runtime.block_on(async { child.await.unwrap() });
+
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn block_on_root_can_spawn_and_join_child() {
+        let mut runtime = Runtime::default();
+        let shared_trace = Arc::new(Mutex::new(Vec::new()));
+
+        let root = {
+            let handle = runtime.handle();
+            let shared_trace = Arc::clone(&shared_trace);
+
+            async move {
+                shared_trace.lock().unwrap().push("parent:start");
+                let child = handle.spawn({
+                    let shared_trace = Arc::clone(&shared_trace);
+
+                    async move {
+                        shared_trace.lock().unwrap().push("child");
+                        42
+                    }
+                });
+
+                let x = child.await.unwrap();
+                shared_trace.lock().unwrap().push("parent:end");
+
+                x
+            }
+        };
+
+        let result = runtime.block_on(root);
+
+        assert_eq!(result, 42);
         assert_eq!(
-            trace.lock().unwrap().as_slice(),
-            &["outer:start", "inner", "inner", "outer:end"]
+            shared_trace.lock().unwrap().as_slice(),
+            &["parent:start", "child", "parent:end"]
         );
     }
 
-    fn run_until_stalled(runtime: &mut Runtime) -> usize {
-        let mut executed = 0;
+    #[test]
+    fn block_on_accepts_borrowing_root_future() {
+        let mut runtime = Runtime::default();
+        let mut counter = 0;
+        let s = String::from("hello");
 
-        while let Ok(task) = runtime.ready_queue.try_recv() {
-            task.poll_once();
-            executed += 1;
-        }
+        let result = runtime.block_on(async {
+            counter += 1;
 
-        executed
+            &s
+        });
+
+        assert_eq!(result, "hello");
+        assert_eq!(counter, 1);
+    }
+
+    #[test]
+    fn runtime_can_block_on_more_than_once() {
+        let mut runtime = Runtime::default();
+
+        assert_eq!(runtime.block_on(async { 42 }), 42);
+        assert_eq!(runtime.block_on(async { 67 }), 67);
+    }
+
+    #[test]
+    fn detached_task_resumes_on_later_block_on() {
+        let spawned_complete = Arc::new(AtomicBool::new(false));
+        let mut runtime = Runtime::default();
+
+        let root = {
+            let handle = runtime.handle();
+            let spawned_complete = Arc::clone(&spawned_complete);
+
+            async move {
+                handle.spawn({
+                    async move {
+                        spawned_complete.store(true, Ordering::SeqCst);
+                    }
+                });
+
+                42
+            }
+        };
+
+        let result = runtime.block_on(root);
+
+        assert_eq!(result, 42);
+        assert!(!spawned_complete.load(Ordering::SeqCst));
+
+        runtime.block_on(async {});
+
+        assert!(spawned_complete.load(Ordering::SeqCst));
     }
 }
