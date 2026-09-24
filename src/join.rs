@@ -115,16 +115,10 @@ impl<T> Drop for JoinSender<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        pin::pin,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-        task::{Context, Wake},
-    };
+    use std::{pin::pin, sync::Arc, task::Context};
 
     use super::*;
+    use crate::test_utils::{WakeCounter, noop_context};
 
     #[test]
     fn completed_join_is_immediately_ready() {
@@ -134,7 +128,7 @@ mod tests {
 
         let mut handle = pin!(handle);
 
-        let result = handle.as_mut().poll(&mut context());
+        let result = handle.as_mut().poll(&mut noop_context());
 
         assert_eq!(result, Poll::Ready(Ok(42)));
     }
@@ -223,30 +217,5 @@ mod tests {
         drop(sender);
 
         assert_eq!(counter.count(), 0);
-    }
-
-    fn context() -> Context<'static> {
-        Context::from_waker(Waker::noop())
-    }
-
-    #[derive(Default)]
-    struct WakeCounter {
-        wakes: AtomicUsize,
-    }
-
-    impl WakeCounter {
-        fn count(&self) -> usize {
-            self.wakes.load(Ordering::SeqCst)
-        }
-    }
-
-    impl Wake for WakeCounter {
-        fn wake(self: Arc<Self>) {
-            self.wakes.fetch_add(1, Ordering::SeqCst);
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.wakes.fetch_add(1, Ordering::SeqCst);
-        }
     }
 }

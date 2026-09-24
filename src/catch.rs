@@ -39,11 +39,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        future::poll_fn,
-        pin::pin,
-        task::{Context, Waker},
-    };
+    use std::{future::poll_fn, pin::pin};
+
+    use crate::test_utils::noop_context;
 
     use super::*;
 
@@ -51,7 +49,7 @@ mod tests {
     fn returns_output_when_future_completes() {
         let mut fut = pin!(CatchUnwind::new(async { 42 }));
 
-        let result = fut.as_mut().poll(&mut context());
+        let result = fut.as_mut().poll(&mut noop_context());
 
         match result {
             Poll::Ready(Ok(value)) => assert_eq!(value, 42),
@@ -65,7 +63,7 @@ mod tests {
             panic!("oups");
         }));
 
-        let result = fut.as_mut().poll(&mut context());
+        let result = fut.as_mut().poll(&mut noop_context());
 
         match result {
             Poll::Ready(Err(payload)) => assert_eq!(payload.downcast_ref::<&str>(), Some(&"oups")),
@@ -77,7 +75,7 @@ mod tests {
     fn propagates_pending() {
         let mut fut = pin!(CatchUnwind::new(poll_fn(|_| { Poll::<()>::Pending })));
 
-        let result = fut.as_mut().poll(&mut context());
+        let result = fut.as_mut().poll(&mut noop_context());
 
         assert!(result.is_pending());
     }
@@ -97,9 +95,9 @@ mod tests {
 
         let mut fut = pin!(CatchUnwind::new(inner));
 
-        assert!(fut.as_mut().poll(&mut context()).is_pending());
+        assert!(fut.as_mut().poll(&mut noop_context()).is_pending());
 
-        match fut.as_mut().poll(&mut context()) {
+        match fut.as_mut().poll(&mut noop_context()) {
             Poll::Ready(Err(payload)) => assert_eq!(payload.downcast_ref::<&str>(), Some(&"oups")),
             _ => panic!("expected Ready(Err(...))"),
         }
@@ -120,15 +118,11 @@ mod tests {
 
         let mut fut = pin!(CatchUnwind::new(inner));
 
-        assert!(fut.as_mut().poll(&mut context()).is_pending());
+        assert!(fut.as_mut().poll(&mut noop_context()).is_pending());
 
-        match fut.as_mut().poll(&mut context()) {
+        match fut.as_mut().poll(&mut noop_context()) {
             Poll::Ready(Ok(value)) => assert_eq!(value, 42),
             other => panic!("expected Ready(Ok(42)), got {other:?}"),
         }
-    }
-
-    fn context() -> Context<'static> {
-        Context::from_waker(Waker::noop())
     }
 }

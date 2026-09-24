@@ -166,10 +166,10 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc::TryRecvError,
         },
-        task::{Context, Poll, Waker},
+        task::Poll,
     };
 
-    use crate::{Handle, JoinError, executor::Executor};
+    use crate::{Handle, JoinError, executor::Executor, test_utils::noop_context};
 
     #[test]
     fn poll_one_ready_task_returns_false_when_idle() {
@@ -259,10 +259,10 @@ mod tests {
 
         let mut join = pin!(handle.spawn(async { 42 }));
 
-        assert!(join.as_mut().poll(&mut context()).is_pending());
+        assert!(join.as_mut().poll(&mut noop_context()).is_pending());
 
         assert!(executor.poll_one_ready_task());
-        assert_eq!(join.as_mut().poll(&mut context()), Poll::Ready(Ok(42)));
+        assert_eq!(join.as_mut().poll(&mut noop_context()), Poll::Ready(Ok(42)));
     }
 
     #[test]
@@ -274,11 +274,11 @@ mod tests {
             panic!("oups");
         }));
 
-        assert!(join.as_mut().poll(&mut context()).is_pending());
+        assert!(join.as_mut().poll(&mut noop_context()).is_pending());
 
         assert!(executor.poll_one_ready_task());
         assert_eq!(
-            join.as_mut().poll(&mut context()),
+            join.as_mut().poll(&mut noop_context()),
             Poll::Ready(Err(JoinError::Panic))
         );
     }
@@ -311,12 +311,12 @@ mod tests {
         let mut join = pin!(handle.spawn(poll_fn(|_| Poll::<()>::Pending)));
 
         assert!(executor.poll_one_ready_task());
-        assert!(join.as_mut().poll(&mut context()).is_pending());
+        assert!(join.as_mut().poll(&mut noop_context()).is_pending());
 
         drop(executor);
 
         assert_eq!(
-            join.as_mut().poll(&mut context()),
+            join.as_mut().poll(&mut noop_context()),
             Poll::Ready(Err(JoinError::Cancelled))
         );
     }
@@ -330,7 +330,7 @@ mod tests {
         let mut join = pin!(handle.spawn(async move { not_send_data }));
 
         executor.run_until_stalled();
-        let result = join.as_mut().poll(&mut context());
+        let result = join.as_mut().poll(&mut noop_context());
 
         let Poll::Ready(result) = result else {
             panic!("join should be ready");
@@ -372,7 +372,7 @@ mod tests {
 
         executor.run_until_stalled();
 
-        assert_eq!(join.as_mut().poll(&mut context()), Poll::Ready(Ok(42)));
+        assert_eq!(join.as_mut().poll(&mut noop_context()), Poll::Ready(Ok(42)));
         assert_eq!(
             shared_trace.lock().unwrap().as_slice(),
             &["parent:start", "child", "parent:end"]
@@ -419,7 +419,7 @@ mod tests {
         drop(executor);
 
         assert_eq!(
-            join.as_mut().poll(&mut context()),
+            join.as_mut().poll(&mut noop_context()),
             Poll::Ready(Err(JoinError::Cancelled))
         );
     }
@@ -433,12 +433,8 @@ mod tests {
 
         let mut join = pin!(handle.spawn(async {}));
         assert_eq!(
-            join.as_mut().poll(&mut context()),
+            join.as_mut().poll(&mut noop_context()),
             Poll::Ready(Err(JoinError::Cancelled))
         );
-    }
-
-    fn context() -> Context<'static> {
-        Context::from_waker(Waker::noop())
     }
 }
