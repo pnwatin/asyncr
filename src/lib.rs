@@ -5,6 +5,7 @@ mod join;
 mod runtime;
 mod scheduling;
 mod task;
+pub mod time;
 
 #[cfg(test)]
 mod test_utils;

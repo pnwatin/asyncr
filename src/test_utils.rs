@@ -2,9 +2,28 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
+        mpsc::{self, channel},
     },
     task::{Context, Wake, Waker},
 };
+
+pub struct WakeChannel(mpsc::Sender<()>);
+
+pub fn get_wake_channel() -> (WakeChannel, mpsc::Receiver<()>) {
+    let (tx, rx) = channel();
+
+    (WakeChannel(tx), rx)
+}
+
+impl Wake for WakeChannel {
+    fn wake(self: Arc<Self>) {
+        let _ = self.0.send(());
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _ = self.0.send(());
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct WakeCounter {

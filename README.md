@@ -76,12 +76,12 @@ handle, and the runtime that owns scheduling.
 Concept: an external producer stores a waker and signals it when a resource
 becomes ready.
 
-- [ ] Implement a delay future using one helper thread as the event source.
-- [ ] Store and replace the most recently supplied waker correctly.
-- [ ] Ensure repeated polls do not create repeated helper threads.
-- [ ] Handle a delay that is already elapsed.
-- [ ] Explore what happens when the delay future is dropped before firing.
-- [ ] Test that the executor sleeps rather than spins while waiting.
+- [x] Implement a delay future using one helper thread as the event source.
+- [x] Store and replace the most recently supplied waker correctly.
+- [x] Ensure repeated polls do not create repeated helper threads.
+- [x] Handle a delay that is already elapsed.
+- [x] Explore what happens when the delay future is dropped before firing.
+- [x] Test that the executor sleeps rather than spins while waiting.
 
 Completion check: explain why a future may receive a different waker on every
 poll and when `Waker::will_wake` is useful.
