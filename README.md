@@ -313,6 +313,12 @@ Concept: optimize measured bottlenecks while preserving scheduler correctness.
 - [ ] Establish benchmarks for spawn, wake, scheduling, timers, and I/O.
 - [ ] Measure throughput and tail latency, not only averages.
 - [ ] Count allocations per task and per wakeup.
+- [ ] Separate diagnostic task IDs from the references used to schedule tasks,
+  then measure the current ID-to-`HashMap` lookup design.
+- [ ] Compare safe storage and reference designs, such as generational slot keys
+  and reference-counted task handles, before considering raw task pointers.
+- [ ] Document which runtime, queue, waker, and join references keep a task alive
+  before changing its ownership model or building a custom `RawWaker`.
 - [ ] Explore intrusive task queues only after profiling justifies them.
 - [ ] Explore task-state bit packing and atomics only with documented
   invariants.
