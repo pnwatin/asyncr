@@ -26,6 +26,7 @@ impl Executor {
             ready_tx,
             pending_spawns: Default::default(),
             next_id: Cell::new(1),
+            closed: Cell::new(false),
         });
 
         let executor = Self {
@@ -105,10 +106,18 @@ impl Executor {
     }
 }
 
+impl Drop for Executor {
+    fn drop(&mut self) {
+        self.spawn_state.closed.set(true);
+        self.spawn_state.pending_spawns.borrow_mut().clear();
+    }
+}
+
 pub(crate) struct SpawnState {
     pending_spawns: RefCell<VecDeque<LocalTask>>,
     ready_tx: mpsc::Sender<Id>,
     next_id: Cell<u64>,
+    closed: Cell<bool>,
 }
 
 impl SpawnState {
@@ -116,6 +125,10 @@ impl SpawnState {
     where
         F: Future<Output = ()> + 'static,
     {
+        if self.closed.get() {
+            return;
+        }
+
         let task_id = self.next_id();
         let schedule = TaskSchedule::new(task_id, self.ready_tx.clone());
 
@@ -394,6 +407,35 @@ mod tests {
 
             counter
         }
+    }
+
+    #[test]
+    fn pending_task_is_cancelled_on_executor_drop() {
+        let (executor, spawn_state) = Executor::new();
+        let handle = Handle { spawn_state };
+
+        let mut join = pin!(handle.spawn(async {}));
+
+        drop(executor);
+
+        assert_eq!(
+            join.as_mut().poll(&mut context()),
+            Poll::Ready(Err(JoinError::Cancelled))
+        );
+    }
+
+    #[test]
+    fn spawn_after_shutdown_is_immediately_cancelled() {
+        let (executor, spawn_state) = Executor::new();
+        let handle = Handle { spawn_state };
+
+        drop(executor);
+
+        let mut join = pin!(handle.spawn(async {}));
+        assert_eq!(
+            join.as_mut().poll(&mut context()),
+            Poll::Ready(Err(JoinError::Cancelled))
+        );
     }
 
     fn context() -> Context<'static> {
