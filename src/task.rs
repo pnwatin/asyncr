@@ -1,24 +1,22 @@
-use std::{pin::Pin, sync::Arc};
-
-use uuid::Uuid;
+use std::{num::NonZeroU64, pin::Pin, sync::Arc};
 
 use crate::scheduling::TaskSchedule;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub(crate) struct TaskId(Uuid);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Id(u64);
 
-pub(crate) const ROOT_TASK_ID: TaskId = TaskId(Uuid::nil());
+pub(crate) const ROOT_TASK_ID: Id = Id(0);
 
-impl TaskId {
-    pub(crate) fn new() -> Self {
-        Self(Uuid::new_v4())
+impl Id {
+    pub(crate) fn new(integer: impl Into<NonZeroU64>) -> Self {
+        Self(integer.into().into())
     }
 }
 
 pub(crate) type TaskFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 pub(crate) struct LocalTask {
-    pub(crate) id: TaskId,
+    pub(crate) id: Id,
     pub(crate) future: TaskFuture,
     pub(crate) schedule: Arc<TaskSchedule>,
 }

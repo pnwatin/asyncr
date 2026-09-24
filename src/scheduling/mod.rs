@@ -5,17 +5,17 @@ use std::{
     task::{Poll, Wake, Waker},
 };
 
-use crate::task::TaskId;
+use crate::task::Id;
 use state::{ScheduleAction, ScheduleState};
 
 pub(super) struct TaskSchedule {
-    id: TaskId,
+    id: Id,
     state: Mutex<ScheduleState>,
-    ready_tx: mpsc::Sender<TaskId>,
+    ready_tx: mpsc::Sender<Id>,
 }
 
 impl TaskSchedule {
-    pub(super) fn new(id: TaskId, ready_tx: mpsc::Sender<TaskId>) -> Arc<Self> {
+    pub(super) fn new(id: Id, ready_tx: mpsc::Sender<Id>) -> Arc<Self> {
         Arc::new(Self {
             id,
             state: Mutex::new(ScheduleState::Idle),
@@ -76,14 +76,17 @@ impl Wake for TaskSchedule {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc::{TryRecvError, channel};
+    use std::{
+        num::NonZeroU64,
+        sync::mpsc::{TryRecvError, channel},
+    };
 
     use super::*;
 
     #[test]
     fn new_schedule_is_initially_idle() {
         let (ready_tx, ready_rx) = channel();
-        let task_id = TaskId::new();
+        let task_id = id();
 
         let _schedule = TaskSchedule::new(task_id, ready_tx);
 
@@ -93,7 +96,7 @@ mod tests {
     #[test]
     fn request_schedule_enqueues_idle_task_once() {
         let (ready_tx, ready_rx) = channel();
-        let task_id = TaskId::new();
+        let task_id = id();
 
         let schedule = TaskSchedule::new(task_id, ready_tx);
 
@@ -111,7 +114,7 @@ mod tests {
     #[test]
     fn wake_requeues_pending_idle_task() {
         let (ready_tx, ready_rx) = channel();
-        let task_id = TaskId::new();
+        let task_id = id();
 
         let schedule = TaskSchedule::new(task_id, ready_tx);
 
@@ -133,7 +136,7 @@ mod tests {
     #[test]
     fn wake_during_poll_requeues_pending_task_once() {
         let (ready_tx, ready_rx) = channel();
-        let task_id = TaskId::new();
+        let task_id = id();
 
         let schedule = TaskSchedule::new(task_id, ready_tx);
 
@@ -159,7 +162,7 @@ mod tests {
     #[test]
     fn completed_task_is_not_requeued() {
         let (ready_tx, ready_rx) = channel();
-        let task_id = TaskId::new();
+        let task_id = id();
 
         let schedule = TaskSchedule::new(task_id, ready_tx);
 
@@ -184,13 +187,16 @@ mod tests {
     #[test]
     fn wake_after_ready_queue_is_dropped_is_harmless() {
         let (ready_tx, ready_rx) = channel();
-        let task_id = TaskId::new();
 
-        let schedule = TaskSchedule::new(task_id, ready_tx);
+        let schedule = TaskSchedule::new(id(), ready_tx);
         let waker = schedule.waker();
 
         drop(ready_rx);
 
         waker.wake();
+    }
+
+    fn id() -> Id {
+        Id::new(NonZeroU64::new(1).unwrap())
     }
 }

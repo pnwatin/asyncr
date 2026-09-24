@@ -1,6 +1,7 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
+    num::NonZeroU64,
     pin::pin,
     rc::Rc,
     sync::mpsc::{self, RecvError, channel},
@@ -9,13 +10,13 @@ use std::{
 
 use crate::{
     scheduling::{TaskPollOutcome, TaskSchedule},
-    task::{LocalTask, ROOT_TASK_ID, TaskId},
+    task::{Id, LocalTask, ROOT_TASK_ID},
 };
 
 pub(crate) struct Executor {
-    tasks: HashMap<TaskId, LocalTask>,
+    tasks: HashMap<Id, LocalTask>,
     spawn_state: Rc<SpawnState>,
-    ready_rx: mpsc::Receiver<TaskId>,
+    ready_rx: mpsc::Receiver<Id>,
 }
 
 impl Executor {
@@ -24,6 +25,7 @@ impl Executor {
         let spawn_state = Rc::new(SpawnState {
             ready_tx,
             pending_spawns: Default::default(),
+            next_id: Cell::new(1),
         });
 
         let executor = Self {
@@ -77,7 +79,7 @@ impl Executor {
         }
     }
 
-    fn poll_task(&mut self, id: TaskId) {
+    fn poll_task(&mut self, id: Id) {
         let task = self
             .tasks
             .get_mut(&id)
@@ -105,7 +107,8 @@ impl Executor {
 
 pub(crate) struct SpawnState {
     pending_spawns: RefCell<VecDeque<LocalTask>>,
-    ready_tx: mpsc::Sender<TaskId>,
+    ready_tx: mpsc::Sender<Id>,
+    next_id: Cell<u64>,
 }
 
 impl SpawnState {
@@ -113,7 +116,7 @@ impl SpawnState {
     where
         F: Future<Output = ()> + 'static,
     {
-        let task_id = TaskId::new();
+        let task_id = self.next_id();
         let schedule = TaskSchedule::new(task_id, self.ready_tx.clone());
 
         let local_task = LocalTask {
@@ -125,6 +128,16 @@ impl SpawnState {
         self.pending_spawns.borrow_mut().push_back(local_task);
 
         schedule.request_schedule();
+    }
+
+    fn next_id(&self) -> Id {
+        loop {
+            let id = self.next_id.replace(self.next_id.get().wrapping_add(1));
+
+            if let Some(id) = NonZeroU64::new(id) {
+                return Id::new(id);
+            }
+        }
     }
 }
 
