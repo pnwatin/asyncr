@@ -17,29 +17,39 @@ impl TimerId {
 }
 
 #[derive(Default)]
-pub(crate) struct TimerDriver {
+struct TimerState {
     next_id: u64,
     deadlines: BinaryHeap<Reverse<(Instant, TimerId)>>,
     registrations: HashMap<TimerId, TimerRegistration>,
 }
 
-impl TimerDriver {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
+#[derive(Clone)]
+pub(crate) struct TimerHandle {
+    state: Rc<RefCell<TimerState>>,
+}
 
-    pub(crate) fn register(&mut self, deadline: Instant, waker: Waker) -> TimerId {
+pub(crate) struct TimerDriver {
+    state: Rc<RefCell<TimerState>>,
+}
+
+impl TimerHandle {
+    pub(crate) fn register(&self, deadline: Instant, waker: Waker) -> TimerId {
         let id = self.next_id();
 
-        self.deadlines.push(Reverse((deadline, id)));
-        self.registrations
+        let mut state = self.state.borrow_mut();
+
+        state.deadlines.push(Reverse((deadline, id)));
+        state
+            .registrations
             .insert(id, TimerRegistration { deadline, waker });
 
         id
     }
 
-    pub(crate) fn update_waker(&mut self, id: TimerId, waker: &Waker) {
-        let registration = self
+    pub(crate) fn update_waker(&self, id: TimerId, waker: &Waker) {
+        let mut state = self.state.borrow_mut();
+
+        let registration = state
             .registrations
             .get_mut(&id)
             .expect("pending timer should have registration");
@@ -49,45 +59,81 @@ impl TimerDriver {
         }
     }
 
-    pub(crate) fn cancel(&mut self, id: TimerId) {
-        self.registrations.remove(&id);
+    pub(crate) fn cancel(&self, id: TimerId) {
+        self.state.borrow_mut().registrations.remove(&id);
     }
 
-    pub(crate) fn reschedule(&mut self, id: TimerId, new_deadline: Instant) {
-        let registration = self
+    pub(crate) fn reschedule(&self, id: TimerId, new_deadline: Instant) {
+        let mut state = self.state.borrow_mut();
+
+        let registration = state
             .registrations
             .get_mut(&id)
             .expect("cannot reschedule an inactive timer");
 
         registration.deadline = new_deadline;
-        self.deadlines.push(Reverse((new_deadline, id)));
+        state.deadlines.push(Reverse((new_deadline, id)));
     }
 
-    pub(crate) fn process_expired(&mut self, now: Instant) -> Vec<Waker> {
+    fn next_id(&self) -> TimerId {
+        let mut state = self.state.borrow_mut();
+        let id = TimerId::new(state.next_id);
+
+        state.next_id = state.next_id.wrapping_add(1);
+
+        if state.registrations.contains_key(&id) {
+            panic!("timer id exhausted");
+        }
+
+        id
+    }
+}
+
+impl TimerDriver {
+    pub(crate) fn new() -> (Self, TimerHandle) {
+        let state = Rc::new(RefCell::new(TimerState::default()));
+
+        let handle = TimerHandle {
+            state: Rc::clone(&state),
+        };
+        let driver = TimerDriver { state };
+
+        (driver, handle)
+    }
+
+    pub(crate) fn process_expired(&mut self, now: Instant) {
         let mut wakers = Vec::new();
 
-        while let Some(&Reverse((deadline, id))) = self.deadlines.peek() {
-            if deadline > now {
-                break;
-            }
+        {
+            let mut state = self.state.borrow_mut();
 
-            self.deadlines.pop();
+            while let Some(&Reverse((deadline, id))) = state.deadlines.peek() {
+                if deadline > now {
+                    break;
+                }
 
-            if let Entry::Occupied(entry) = self.registrations.entry(id)
-                && deadline == entry.get().deadline
-            {
-                let (_, registration) = entry.remove_entry();
-                wakers.push(registration.waker);
+                state.deadlines.pop();
+
+                if let Entry::Occupied(entry) = state.registrations.entry(id)
+                    && deadline == entry.get().deadline
+                {
+                    let (_, registration) = entry.remove_entry();
+                    wakers.push(registration.waker);
+                }
             }
         }
 
-        wakers
+        for waker in wakers {
+            waker.wake();
+        }
     }
 
     pub(crate) fn next_deadline(&mut self) -> Option<Instant> {
+        let mut state = self.state.borrow_mut();
+
         loop {
-            let &Reverse((deadline, id)) = self.deadlines.peek()?;
-            let is_current = self
+            let &Reverse((deadline, id)) = state.deadlines.peek()?;
+            let is_current = state
                 .registrations
                 .get(&id)
                 .is_some_and(|registration| registration.deadline == deadline);
@@ -96,20 +142,8 @@ impl TimerDriver {
                 return Some(deadline);
             }
 
-            self.deadlines.pop();
+            state.deadlines.pop();
         }
-    }
-
-    fn next_id(&mut self) -> TimerId {
-        let id = TimerId::new(self.next_id);
-
-        self.next_id = self.next_id.wrapping_add(1);
-
-        if self.registrations.contains_key(&id) {
-            panic!("timer id exhausted");
-        }
-
-        id
     }
 }
 

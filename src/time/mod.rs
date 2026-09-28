@@ -1,4 +1,4 @@
-mod driver;
+pub(crate) mod driver;
 mod sleep;
 
 pub use sleep::{Sleep, sleep, sleep_until};
