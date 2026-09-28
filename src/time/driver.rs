@@ -165,19 +165,17 @@ struct TimerRegistration {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
 
-    use crate::test_utils::WakeCounter;
+    use crate::test_utils::counting_waker;
 
     use super::*;
 
     #[test]
     fn timer_expires_when_shared_clock_reaches_deadline() {
-        let clock = Clock::new_paused();
-        let (mut driver, handle) = TimerDriver::new(clock.clone());
+        let (clock, mut driver, handle) = paused_timer_driver();
 
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
 
         let deadline = handle.now() + Duration::from_secs(5);
         handle.register(deadline, waker);
@@ -197,39 +195,50 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_ignores_stale_heap_entries() {
-        let clock = Clock::new_paused();
-        let (mut driver, handle) = TimerDriver::new(clock.clone());
+    fn next_deadline_skips_cancelled_timer() {
+        let (_clock, mut driver, handle) = paused_timer_driver();
+        let now = handle.now();
+        let cancelled_deadline = now + Duration::from_secs(5);
+        let active_deadline = now + Duration::from_secs(10);
 
-        let counter_a = Arc::new(WakeCounter::default());
-        let waker_a = Waker::from(Arc::clone(&counter_a));
+        let id = handle.register(cancelled_deadline, Waker::noop().clone());
+        handle.register(active_deadline, Waker::noop().clone());
 
-        let counter_b = Arc::new(WakeCounter::default());
-        let waker_b = Waker::from(Arc::clone(&counter_b));
+        handle.cancel(id);
 
-        let deadline_a = handle.now() + Duration::from_secs(5);
-        let deadline_b = handle.now() + Duration::from_secs(10);
+        assert_eq!(driver.next_deadline(), Some(active_deadline));
+    }
+
+    #[test]
+    fn cancelled_timer_is_not_woken() {
+        let (clock, mut driver, handle) = paused_timer_driver();
+
+        let (counter_a, waker_a) = counting_waker();
+        let (counter_b, waker_b) = counting_waker();
+
+        let now = handle.now();
+
+        let deadline_a = now + Duration::from_secs(5);
+        let deadline_b = now + Duration::from_secs(10);
+
         let id_a = handle.register(deadline_a, waker_a);
         handle.register(deadline_b, waker_b);
 
         handle.cancel(id_a);
-
-        assert_eq!(driver.next_deadline(), Some(deadline_b));
 
         clock.advance(Duration::from_secs(15));
         driver.process_expired();
 
         assert_eq!(counter_a.count(), 0);
         assert_eq!(counter_b.count(), 1);
+        assert_eq!(driver.next_deadline(), None);
     }
 
     #[test]
     fn rescheduling_later_does_not_fire_at_the_old_deadline() {
-        let clock = Clock::new_paused();
-        let (mut driver, handle) = TimerDriver::new(clock.clone());
+        let (clock, mut driver, handle) = paused_timer_driver();
 
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
 
         let now = handle.now();
 
@@ -247,18 +256,15 @@ mod tests {
         clock.advance(Duration::from_secs(5));
         driver.process_expired();
         assert_eq!(counter.count(), 1);
+        assert_eq!(driver.next_deadline(), None);
     }
 
     #[test]
     fn updating_the_waker_replaces_the_old_one() {
-        let clock = Clock::new_paused();
-        let (mut driver, handle) = TimerDriver::new(clock.clone());
+        let (clock, mut driver, handle) = paused_timer_driver();
 
-        let counter_a = Arc::new(WakeCounter::default());
-        let waker_a = Waker::from(Arc::clone(&counter_a));
-
-        let counter_b = Arc::new(WakeCounter::default());
-        let waker_b = Waker::from(Arc::clone(&counter_b));
+        let (counter_a, waker_a) = counting_waker();
+        let (counter_b, waker_b) = counting_waker();
 
         let deadline = handle.now() + Duration::from_secs(5);
         let id = handle.register(deadline, waker_a);
@@ -269,24 +275,22 @@ mod tests {
 
         assert_eq!(counter_a.count(), 0);
         assert_eq!(counter_b.count(), 1);
+        assert_eq!(driver.next_deadline(), None);
     }
 
     #[test]
     fn timers_expire_in_deadline_order() {
-        let clock = Clock::new_paused();
-        let (mut driver, handle) = TimerDriver::new(clock.clone());
+        let (clock, mut driver, handle) = paused_timer_driver();
 
-        let counter_a = Arc::new(WakeCounter::default());
-        let waker_a = Waker::from(Arc::clone(&counter_a));
-        let deadline_a = handle.now() + Duration::from_secs(10);
+        let (counter_a, waker_a) = counting_waker();
+        let (counter_b, waker_b) = counting_waker();
+        let (counter_c, waker_c) = counting_waker();
 
-        let counter_b = Arc::new(WakeCounter::default());
-        let waker_b = Waker::from(Arc::clone(&counter_b));
-        let deadline_b = handle.now() + Duration::from_secs(5);
+        let now = handle.now();
 
-        let counter_c = Arc::new(WakeCounter::default());
-        let waker_c = Waker::from(Arc::clone(&counter_c));
-        let deadline_c = handle.now() + Duration::from_secs(7);
+        let deadline_a = now + Duration::from_secs(10);
+        let deadline_b = now + Duration::from_secs(5);
+        let deadline_c = now + Duration::from_secs(7);
 
         handle.register(deadline_a, waker_a);
         handle.register(deadline_b, waker_b);
@@ -316,5 +320,12 @@ mod tests {
         assert_eq!(counter_b.count(), 1);
         assert_eq!(counter_c.count(), 1);
         assert_eq!(driver.next_deadline(), None);
+    }
+
+    fn paused_timer_driver() -> (Clock, TimerDriver, TimerHandle) {
+        let clock = Clock::new_paused();
+        let (driver, handle) = TimerDriver::new(clock.clone());
+
+        (clock, driver, handle)
     }
 }

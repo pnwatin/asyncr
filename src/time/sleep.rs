@@ -98,14 +98,13 @@ impl Future for Sleep {
 mod tests {
     use std::{pin::pin, task::Context};
 
-    use crate::test_utils::{WakeCounter, get_wake_channel};
+    use crate::test_utils::{counting_waker, get_wake_channel};
 
     use super::*;
 
     #[test]
     fn elapsed_deadline_is_ready_on_first_poll() {
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
         let mut sleep = pin!(sleep_until(Instant::now() - Duration::from_mins(60)));
@@ -116,8 +115,7 @@ mod tests {
 
     #[test]
     fn sleep_expired_before_first_poll_is_ready() {
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
         let mut sleep = pin!(sleep(Duration::from_millis(10)));
@@ -130,9 +128,8 @@ mod tests {
 
     #[test]
     fn pending_sleep_wakes_registered_waker_at_deadline() {
-        let (wake, wake_rx) = get_wake_channel();
+        let (waker, wake_rx) = get_wake_channel();
 
-        let waker = Waker::from(Arc::new(wake));
         let mut cx = Context::from_waker(&waker);
 
         let mut sleep = pin!(sleep(Duration::from_millis(10)));
@@ -148,12 +145,10 @@ mod tests {
 
     #[test]
     fn deadline_wakes_most_recent_waker() {
-        let counter_a = Arc::new(WakeCounter::default());
-        let waker_a = Waker::from(Arc::clone(&counter_a));
+        let (counter_a, waker_a) = counting_waker();
         let mut cx_a = Context::from_waker(&waker_a);
 
-        let (wake, wake_rx) = get_wake_channel();
-        let waker_b = Waker::from(Arc::new(wake));
+        let (waker_b, wake_rx) = get_wake_channel();
         let mut cx_b = Context::from_waker(&waker_b);
 
         let mut sleep = pin!(sleep(Duration::from_millis(10)));
@@ -170,8 +165,7 @@ mod tests {
 
     #[test]
     fn repeated_polls_produce_one_deadline_wakeup() {
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
         let mut sleep = pin!(sleep(Duration::from_millis(10)));
@@ -187,9 +181,8 @@ mod tests {
 
     #[test]
     fn dropping_sleep_does_not_cancel_helper() {
-        let (wake, wake_rx) = get_wake_channel();
+        let (waker, wake_rx) = get_wake_channel();
 
-        let waker = Waker::from(Arc::new(wake));
         let mut cx = Context::from_waker(&waker);
 
         let mut sleep = Box::pin(sleep(Duration::from_millis(10)));

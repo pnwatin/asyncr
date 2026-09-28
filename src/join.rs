@@ -115,10 +115,10 @@ impl<T> Drop for JoinSender<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{pin::pin, sync::Arc, task::Context};
+    use std::{pin::pin, task::Context};
 
     use super::*;
-    use crate::test_utils::{WakeCounter, noop_context};
+    use crate::test_utils::{counting_waker, noop_context};
 
     #[test]
     fn completed_join_is_immediately_ready() {
@@ -137,8 +137,7 @@ mod tests {
     fn completion_wakes_join_waiter() {
         let (sender, handle) = join_pair::<i32>();
 
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
         let mut handle = pin!(handle);
 
@@ -156,8 +155,7 @@ mod tests {
     fn dropping_sender_cancels_join() {
         let (sender, handle) = join_pair::<i32>();
 
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
         let mut handle = pin!(handle);
 
@@ -178,11 +176,8 @@ mod tests {
     fn latest_join_waker_is_notified() {
         let (sender, handle) = join_pair::<i32>();
 
-        let counter_a = Arc::new(WakeCounter::default());
-        let counter_b = Arc::new(WakeCounter::default());
-
-        let waker_a = Waker::from(Arc::clone(&counter_a));
-        let waker_b = Waker::from(Arc::clone(&counter_b));
+        let (counter_a, waker_a) = counting_waker();
+        let (counter_b, waker_b) = counting_waker();
 
         let mut cx_a = Context::from_waker(&waker_a);
         let mut cx_b = Context::from_waker(&waker_b);
@@ -203,8 +198,7 @@ mod tests {
     fn dropping_join_handle_removes_waiter() {
         let (sender, handle) = join_pair::<i32>();
 
-        let counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&counter));
+        let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
         {
             let mut handle = pin!(handle);

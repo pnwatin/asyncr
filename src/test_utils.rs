@@ -9,10 +9,12 @@ use std::{
 
 pub struct WakeChannel(mpsc::Sender<()>);
 
-pub fn get_wake_channel() -> (WakeChannel, mpsc::Receiver<()>) {
+pub fn get_wake_channel() -> (Waker, mpsc::Receiver<()>) {
     let (tx, rx) = channel();
 
-    (WakeChannel(tx), rx)
+    let waker = Waker::from(Arc::new(WakeChannel(tx)));
+
+    (waker, rx)
 }
 
 impl Wake for WakeChannel {
@@ -23,6 +25,13 @@ impl Wake for WakeChannel {
     fn wake_by_ref(self: &Arc<Self>) {
         let _ = self.0.send(());
     }
+}
+
+pub(crate) fn counting_waker() -> (Arc<WakeCounter>, Waker) {
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(Arc::clone(&counter));
+
+    (counter, waker)
 }
 
 #[derive(Default)]
