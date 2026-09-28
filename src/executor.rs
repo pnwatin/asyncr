@@ -12,7 +12,7 @@ use crate::{
     handle::Handle,
     scheduling::{TaskPollOutcome, TaskSchedule},
     task::{Id, LocalTask, ROOT_TASK_ID},
-    time::driver::TimerDriver,
+    time::{clock::Clock, driver::TimerDriver},
 };
 
 pub(crate) struct Executor {
@@ -25,7 +25,7 @@ pub(crate) struct Executor {
 impl Executor {
     pub(crate) fn new() -> (Self, Handle) {
         let (ready_tx, ready_rx) = channel();
-        let (timer_driver, timer_handle) = TimerDriver::new();
+        let (timer_driver, timer_handle) = TimerDriver::new(Clock::new());
         let spawn_state = Rc::new(SpawnState {
             ready_tx,
             pending_spawns: Default::default(),

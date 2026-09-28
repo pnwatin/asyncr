@@ -7,6 +7,8 @@ use std::{
     time::Instant,
 };
 
+use crate::time::clock::Clock;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct TimerId(u64);
 
@@ -26,10 +28,12 @@ struct TimerState {
 #[derive(Clone)]
 pub(crate) struct TimerHandle {
     state: Rc<RefCell<TimerState>>,
+    clock: Clock,
 }
 
 pub(crate) struct TimerDriver {
     state: Rc<RefCell<TimerState>>,
+    clock: Clock,
 }
 
 impl TimerHandle {
@@ -75,6 +79,10 @@ impl TimerHandle {
         state.deadlines.push(Reverse((new_deadline, id)));
     }
 
+    pub(crate) fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
     fn next_id(&self) -> TimerId {
         let mut state = self.state.borrow_mut();
         let id = TimerId::new(state.next_id);
@@ -90,19 +98,22 @@ impl TimerHandle {
 }
 
 impl TimerDriver {
-    pub(crate) fn new() -> (Self, TimerHandle) {
+    pub(crate) fn new(clock: Clock) -> (Self, TimerHandle) {
         let state = Rc::new(RefCell::new(TimerState::default()));
 
         let handle = TimerHandle {
             state: Rc::clone(&state),
+            clock: clock.clone(),
         };
-        let driver = TimerDriver { state };
+        let driver = TimerDriver { state, clock };
 
         (driver, handle)
     }
 
-    pub(crate) fn process_expired(&mut self, now: Instant) {
+    pub(crate) fn process_expired(&mut self) {
         let mut wakers = Vec::new();
+
+        let now = self.clock.now();
 
         {
             let mut state = self.state.borrow_mut();
@@ -150,4 +161,160 @@ impl TimerDriver {
 struct TimerRegistration {
     deadline: Instant,
     waker: Waker,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use crate::test_utils::WakeCounter;
+
+    use super::*;
+
+    #[test]
+    fn timer_expires_when_shared_clock_reaches_deadline() {
+        let clock = Clock::new_paused();
+        let (mut driver, handle) = TimerDriver::new(clock.clone());
+
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+
+        let deadline = handle.now() + Duration::from_secs(5);
+        handle.register(deadline, waker);
+
+        driver.process_expired();
+        assert_eq!(counter.count(), 0);
+
+        clock.advance(Duration::from_secs(5));
+
+        driver.process_expired();
+        assert_eq!(counter.count(), 1);
+
+        driver.process_expired();
+        assert_eq!(counter.count(), 1);
+
+        assert_eq!(driver.next_deadline(), None);
+    }
+
+    #[test]
+    fn cancellation_ignores_stale_heap_entries() {
+        let clock = Clock::new_paused();
+        let (mut driver, handle) = TimerDriver::new(clock.clone());
+
+        let counter_a = Arc::new(WakeCounter::default());
+        let waker_a = Waker::from(Arc::clone(&counter_a));
+
+        let counter_b = Arc::new(WakeCounter::default());
+        let waker_b = Waker::from(Arc::clone(&counter_b));
+
+        let deadline_a = handle.now() + Duration::from_secs(5);
+        let deadline_b = handle.now() + Duration::from_secs(10);
+        let id_a = handle.register(deadline_a, waker_a);
+        handle.register(deadline_b, waker_b);
+
+        handle.cancel(id_a);
+
+        assert_eq!(driver.next_deadline(), Some(deadline_b));
+
+        clock.advance(Duration::from_secs(15));
+        driver.process_expired();
+
+        assert_eq!(counter_a.count(), 0);
+        assert_eq!(counter_b.count(), 1);
+    }
+
+    #[test]
+    fn rescheduling_later_does_not_fire_at_the_old_deadline() {
+        let clock = Clock::new_paused();
+        let (mut driver, handle) = TimerDriver::new(clock.clone());
+
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+
+        let now = handle.now();
+
+        let deadline = now + Duration::from_secs(5);
+        let id = handle.register(deadline, waker);
+
+        handle.reschedule(id, now + Duration::from_secs(10));
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+
+        assert_eq!(counter.count(), 0);
+        assert_eq!(driver.next_deadline(), Some(now + Duration::from_secs(10)));
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+        assert_eq!(counter.count(), 1);
+    }
+
+    #[test]
+    fn updating_the_waker_replaces_the_old_one() {
+        let clock = Clock::new_paused();
+        let (mut driver, handle) = TimerDriver::new(clock.clone());
+
+        let counter_a = Arc::new(WakeCounter::default());
+        let waker_a = Waker::from(Arc::clone(&counter_a));
+
+        let counter_b = Arc::new(WakeCounter::default());
+        let waker_b = Waker::from(Arc::clone(&counter_b));
+
+        let deadline = handle.now() + Duration::from_secs(5);
+        let id = handle.register(deadline, waker_a);
+        handle.update_waker(id, &waker_b);
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+
+        assert_eq!(counter_a.count(), 0);
+        assert_eq!(counter_b.count(), 1);
+    }
+
+    #[test]
+    fn timers_expire_in_deadline_order() {
+        let clock = Clock::new_paused();
+        let (mut driver, handle) = TimerDriver::new(clock.clone());
+
+        let counter_a = Arc::new(WakeCounter::default());
+        let waker_a = Waker::from(Arc::clone(&counter_a));
+        let deadline_a = handle.now() + Duration::from_secs(10);
+
+        let counter_b = Arc::new(WakeCounter::default());
+        let waker_b = Waker::from(Arc::clone(&counter_b));
+        let deadline_b = handle.now() + Duration::from_secs(5);
+
+        let counter_c = Arc::new(WakeCounter::default());
+        let waker_c = Waker::from(Arc::clone(&counter_c));
+        let deadline_c = handle.now() + Duration::from_secs(7);
+
+        handle.register(deadline_a, waker_a);
+        handle.register(deadline_b, waker_b);
+        handle.register(deadline_c, waker_c);
+
+        assert_eq!(driver.next_deadline(), Some(deadline_b));
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+
+        assert_eq!(counter_a.count(), 0);
+        assert_eq!(counter_b.count(), 1);
+        assert_eq!(counter_c.count(), 0);
+        assert_eq!(driver.next_deadline(), Some(deadline_c));
+
+        clock.advance(Duration::from_secs(2));
+        driver.process_expired();
+
+        assert_eq!(counter_a.count(), 0);
+        assert_eq!(counter_b.count(), 1);
+        assert_eq!(counter_c.count(), 1);
+        assert_eq!(driver.next_deadline(), Some(deadline_a));
+
+        clock.advance(Duration::from_secs(3));
+        driver.process_expired();
+        assert_eq!(counter_a.count(), 1);
+        assert_eq!(counter_b.count(), 1);
+        assert_eq!(counter_c.count(), 1);
+        assert_eq!(driver.next_deadline(), None);
+    }
 }
