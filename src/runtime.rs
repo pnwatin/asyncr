@@ -7,8 +7,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        let (executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (executor, handle) = Executor::new();
 
         Self { executor, handle }
     }

@@ -9,19 +9,23 @@ use std::{
 };
 
 use crate::{
+    handle::Handle,
     scheduling::{TaskPollOutcome, TaskSchedule},
     task::{Id, LocalTask, ROOT_TASK_ID},
+    time::driver::TimerDriver,
 };
 
 pub(crate) struct Executor {
     tasks: HashMap<Id, LocalTask>,
     spawn_state: Rc<SpawnState>,
     ready_rx: mpsc::Receiver<Id>,
+    timer_driver: TimerDriver,
 }
 
 impl Executor {
-    pub(crate) fn new() -> (Self, Rc<SpawnState>) {
+    pub(crate) fn new() -> (Self, Handle) {
         let (ready_tx, ready_rx) = channel();
+        let (timer_driver, timer_handle) = TimerDriver::new();
         let spawn_state = Rc::new(SpawnState {
             ready_tx,
             pending_spawns: Default::default(),
@@ -33,9 +37,14 @@ impl Executor {
             tasks: Default::default(),
             spawn_state: Rc::clone(&spawn_state),
             ready_rx,
+            timer_driver,
+        };
+        let handle = Handle {
+            spawn_state,
+            timer_handle,
         };
 
-        (executor, spawn_state)
+        (executor, handle)
     }
 
     pub(crate) fn block_on<F>(&mut self, future: F) -> F::Output
@@ -169,7 +178,7 @@ mod tests {
         task::Poll,
     };
 
-    use crate::{Handle, JoinError, executor::Executor, test_utils::noop_context};
+    use crate::{JoinError, executor::Executor, test_utils::noop_context};
 
     #[test]
     fn poll_one_ready_task_returns_false_when_idle() {
@@ -180,7 +189,7 @@ mod tests {
 
     #[test]
     fn poll_one_ready_task_runs_and_removes_completed_task() {
-        let (mut executor, spawn_state) = Executor::new();
+        let (mut executor, handle) = Executor::new();
         let has_run = Arc::new(AtomicBool::new(false));
 
         let future = {
@@ -191,7 +200,7 @@ mod tests {
             }
         };
 
-        spawn_state.submit(future);
+        handle.spawn_state.submit(future);
 
         assert!(executor.poll_one_ready_task());
         assert!(has_run.load(Ordering::SeqCst));
@@ -202,7 +211,7 @@ mod tests {
 
     #[test]
     fn pending_task_is_not_polled_again_without_wake() {
-        let (mut executor, spawn_state) = Executor::new();
+        let (mut executor, handle) = Executor::new();
         let polls = Arc::new(AtomicUsize::new(0));
 
         let future = {
@@ -215,7 +224,7 @@ mod tests {
             })
         };
 
-        spawn_state.submit(future);
+        handle.spawn_state.submit(future);
 
         assert!(executor.poll_one_ready_task());
         assert_eq!(polls.load(Ordering::SeqCst), 1);
@@ -227,7 +236,7 @@ mod tests {
 
     #[test]
     fn wake_during_poll_schedules_another_turn() {
-        let (mut executor, spawn_state) = Executor::new();
+        let (mut executor, handle) = Executor::new();
         let polls = Arc::new(AtomicUsize::new(0));
 
         let future = {
@@ -243,7 +252,7 @@ mod tests {
             })
         };
 
-        spawn_state.submit(future);
+        handle.spawn_state.submit(future);
 
         assert!(executor.poll_one_ready_task());
         assert!(executor.poll_one_ready_task());
@@ -254,8 +263,7 @@ mod tests {
 
     #[test]
     fn spawned_task_result_reaches_join_handle() {
-        let (mut executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (mut executor, handle) = Executor::new();
 
         let mut join = pin!(handle.spawn(async { 42 }));
 
@@ -267,8 +275,7 @@ mod tests {
 
     #[test]
     fn spawned_task_panic_becomes_join_error() {
-        let (mut executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (mut executor, handle) = Executor::new();
 
         let mut join = pin!(handle.spawn(async {
             panic!("oups");
@@ -285,8 +292,7 @@ mod tests {
 
     #[test]
     fn dropping_join_handle_does_not_cancel_task() {
-        let (mut executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (mut executor, handle) = Executor::new();
         let has_run = Arc::new(AtomicBool::new(false));
 
         let future = {
@@ -306,8 +312,7 @@ mod tests {
 
     #[test]
     fn dropping_executor_cancels_active_spawned_task() {
-        let (mut executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (mut executor, handle) = Executor::new();
         let mut join = pin!(handle.spawn(poll_fn(|_| Poll::<()>::Pending)));
 
         assert!(executor.poll_one_ready_task());
@@ -323,8 +328,7 @@ mod tests {
 
     #[test]
     fn spawn_accepts_non_send_future() {
-        let (mut executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (mut executor, handle) = Executor::new();
         let not_send_data = Rc::new(Cell::new(true));
 
         let mut join = pin!(handle.spawn(async move { not_send_data }));
@@ -341,8 +345,7 @@ mod tests {
 
     #[test]
     fn running_task_can_spawn_and_join_child() {
-        let (mut executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (mut executor, handle) = Executor::new();
         let shared_trace = Arc::new(Mutex::new(Vec::new()));
 
         let parent = {
@@ -411,8 +414,7 @@ mod tests {
 
     #[test]
     fn pending_task_is_cancelled_on_executor_drop() {
-        let (executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (executor, handle) = Executor::new();
 
         let mut join = pin!(handle.spawn(async {}));
 
@@ -426,8 +428,7 @@ mod tests {
 
     #[test]
     fn spawn_after_shutdown_is_immediately_cancelled() {
-        let (executor, spawn_state) = Executor::new();
-        let handle = Handle { spawn_state };
+        let (executor, handle) = Executor::new();
 
         drop(executor);
 

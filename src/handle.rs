@@ -4,11 +4,13 @@ use crate::{
     catch::CatchUnwind,
     executor::SpawnState,
     join::{JoinError, JoinHandle, join_pair},
+    time::driver::TimerHandle,
 };
 
 #[derive(Clone)]
 pub struct Handle {
     pub(crate) spawn_state: Rc<SpawnState>,
+    pub(crate) timer_handle: TimerHandle,
 }
 
 impl Handle {
