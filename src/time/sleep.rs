@@ -10,7 +10,10 @@ use crate::{
 
 pub fn sleep(handle: &Handle, duration: Duration) -> Sleep {
     let timer = handle.timer_handle.clone();
-    let deadline = timer.now() + duration;
+    let deadline = timer
+        .now()
+        .checked_add(duration)
+        .expect("sleep duration exceed Instant's range");
 
     Sleep::new(timer, deadline)
 }
@@ -71,7 +74,7 @@ impl Future for Sleep {
 
 impl Drop for Sleep {
     fn drop(&mut self) {
-        if let Some(id) = self.registration {
+        if let Some(id) = self.registration.take() {
             self.timer.cancel(id);
         }
     }
@@ -90,7 +93,7 @@ mod tests {
 
     #[test]
     fn elapsed_deadline_is_immediately_ready() {
-        let (_clock, mut _driver, timer) = paused_timer_driver();
+        let (_clock, mut driver, timer) = paused_timer_driver();
         let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
@@ -98,6 +101,7 @@ mod tests {
         let mut sleep = pin!(Sleep::new(timer, deadline));
 
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Ready(()));
+        assert_eq!(driver.next_deadline(), None);
         assert_eq!(counter.count(), 0);
     }
 
@@ -182,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_pending_sleep_cancel_registration() {
+    fn dropping_pending_sleep_cancels_registration() {
         let (_clock, mut driver, timer) = paused_timer_driver();
 
         let mut cx = Context::from_waker(Waker::noop());
