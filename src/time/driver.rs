@@ -167,7 +167,7 @@ struct TimerRegistration {
 mod tests {
     use std::time::Duration;
 
-    use crate::test_utils::counting_waker;
+    use crate::test_utils::{counting_waker, paused_timer_driver};
 
     use super::*;
 
@@ -320,12 +320,5 @@ mod tests {
         assert_eq!(counter_b.count(), 1);
         assert_eq!(counter_c.count(), 1);
         assert_eq!(driver.next_deadline(), None);
-    }
-
-    fn paused_timer_driver() -> (Clock, TimerDriver, TimerHandle) {
-        let clock = Clock::new_paused();
-        let (driver, handle) = TimerDriver::new(clock.clone());
-
-        (clock, driver, handle)
     }
 }

@@ -7,6 +7,11 @@ use std::{
     task::{Context, Wake, Waker},
 };
 
+use crate::time::{
+    clock::Clock,
+    driver::{TimerDriver, TimerHandle},
+};
+
 pub struct WakeChannel(mpsc::Sender<()>);
 
 pub fn get_wake_channel() -> (Waker, mpsc::Receiver<()>) {
@@ -57,4 +62,11 @@ impl Wake for WakeCounter {
 
 pub fn noop_context() -> Context<'static> {
     Context::from_waker(Waker::noop())
+}
+
+pub fn paused_timer_driver() -> (Clock, TimerDriver, TimerHandle) {
+    let clock = Clock::new_paused();
+    let (driver, handle) = TimerDriver::new(clock.clone());
+
+    (clock, driver, handle)
 }

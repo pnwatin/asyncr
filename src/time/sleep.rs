@@ -1,113 +1,101 @@
 use std::{
-    sync::{Arc, Mutex},
-    task::{Poll, Waker},
-    thread,
+    task::Poll,
     time::{Duration, Instant},
 };
 
-pub fn sleep(duration: Duration) -> Sleep {
-    let deadline = Instant::now() + duration;
+use crate::{
+    Handle,
+    time::driver::{TimerHandle, TimerId},
+};
 
-    Sleep {
-        deadline,
-        inner: Default::default(),
-    }
+pub fn sleep(handle: &Handle, duration: Duration) -> Sleep {
+    let timer = handle.timer_handle.clone();
+    let deadline = timer.now() + duration;
+
+    Sleep::new(timer, deadline)
 }
 
-pub fn sleep_until(instant: Instant) -> Sleep {
-    Sleep {
-        deadline: instant,
-        inner: Default::default(),
-    }
+pub fn sleep_until(handle: &Handle, instant: Instant) -> Sleep {
+    Sleep::new(handle.timer_handle.clone(), instant)
 }
 
 pub struct Sleep {
     deadline: Instant,
-    inner: Arc<Mutex<SleepInner>>,
-}
-
-#[derive(Default)]
-struct SleepInner {
-    elapsed: bool,
-    waker: Option<Waker>,
+    timer: TimerHandle,
+    registration: Option<TimerId>,
 }
 
 impl Sleep {
+    fn new(timer: TimerHandle, deadline: Instant) -> Self {
+        Self {
+            deadline,
+            timer,
+            registration: None,
+        }
+    }
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
     pub fn is_elapsed(&self) -> bool {
-        Instant::now() >= self.deadline()
+        self.timer.now() >= self.deadline()
     }
 }
 
 impl Future for Sleep {
     type Output = ();
     fn poll(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        let mut inner = self.inner.lock().unwrap();
-
-        if inner.elapsed || Instant::now() >= self.deadline {
-            inner.elapsed = true;
-            inner.waker.take();
+        if self.is_elapsed() {
+            if let Some(id) = self.registration.take() {
+                self.timer.cancel(id);
+            }
 
             return Poll::Ready(());
         }
 
-        if let Some(ref mut waker) = inner.waker {
-            if !waker.will_wake(cx.waker()) {
-                *waker = cx.waker().clone();
-            }
+        if let Some(id) = self.registration {
+            self.timer.update_waker(id, cx.waker());
+
+            Poll::Pending
         } else {
-            inner.waker = Some(cx.waker().clone());
+            let id = self.timer.register(self.deadline, cx.waker().clone());
+            self.registration = Some(id);
 
-            drop(inner);
-
-            thread::spawn({
-                let deadline = self.deadline;
-                let inner = Arc::clone(&self.inner);
-
-                move || {
-                    let now = Instant::now();
-
-                    if now < deadline {
-                        thread::sleep(deadline - now);
-                    }
-
-                    let mut inner = inner.lock().unwrap();
-                    inner.elapsed = true;
-                    let waker = inner.waker.take();
-
-                    drop(inner);
-
-                    if let Some(waker) = waker {
-                        waker.wake();
-                    }
-                }
-            });
+            Poll::Pending
         }
+    }
+}
 
-        Poll::Pending
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        if let Some(id) = self.registration {
+            self.timer.cancel(id);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{pin::pin, task::Context};
+    use std::{
+        pin::pin,
+        task::{Context, Waker},
+    };
 
-    use crate::test_utils::{counting_waker, get_wake_channel};
+    use crate::test_utils::{counting_waker, get_wake_channel, paused_timer_driver};
 
     use super::*;
 
     #[test]
-    fn elapsed_deadline_is_ready_on_first_poll() {
+    fn elapsed_deadline_is_immediately_ready() {
+        let (_clock, mut _driver, timer) = paused_timer_driver();
         let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
-        let mut sleep = pin!(sleep_until(Instant::now() - Duration::from_mins(60)));
+        let deadline = timer.now() - Duration::from_secs(5);
+        let mut sleep = pin!(Sleep::new(timer, deadline));
 
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Ready(()));
         assert_eq!(counter.count(), 0);
@@ -115,26 +103,32 @@ mod tests {
 
     #[test]
     fn sleep_expired_before_first_poll_is_ready() {
+        let (clock, mut _driver, timer) = paused_timer_driver();
         let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
-        let mut sleep = pin!(sleep(Duration::from_millis(10)));
+        let deadline = timer.now() + Duration::from_secs(5);
+        let mut sleep = pin!(Sleep::new(timer, deadline));
 
-        std::thread::sleep(Duration::from_secs(1));
+        clock.advance(Duration::from_secs(5));
 
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Ready(()));
         assert_eq!(counter.count(), 0);
     }
 
     #[test]
-    fn pending_sleep_wakes_registered_waker_at_deadline() {
+    fn pending_sleep_wakes_at_deadline() {
+        let (clock, mut driver, timer) = paused_timer_driver();
         let (waker, wake_rx) = get_wake_channel();
-
         let mut cx = Context::from_waker(&waker);
 
-        let mut sleep = pin!(sleep(Duration::from_millis(10)));
+        let deadline = timer.now() + Duration::from_secs(5);
+        let mut sleep = pin!(Sleep::new(timer, deadline));
 
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
 
         wake_rx
             .recv_timeout(Duration::from_secs(1))
@@ -145,16 +139,21 @@ mod tests {
 
     #[test]
     fn deadline_wakes_most_recent_waker() {
+        let (clock, mut driver, timer) = paused_timer_driver();
         let (counter_a, waker_a) = counting_waker();
         let mut cx_a = Context::from_waker(&waker_a);
 
         let (waker_b, wake_rx) = get_wake_channel();
         let mut cx_b = Context::from_waker(&waker_b);
 
-        let mut sleep = pin!(sleep(Duration::from_millis(10)));
+        let deadline = timer.now() + Duration::from_secs(5);
+        let mut sleep = pin!(Sleep::new(timer, deadline));
 
         assert_eq!(sleep.as_mut().poll(&mut cx_a), Poll::Pending);
         assert_eq!(sleep.as_mut().poll(&mut cx_b), Poll::Pending);
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
 
         wake_rx
             .recv_timeout(Duration::from_secs(1))
@@ -165,34 +164,36 @@ mod tests {
 
     #[test]
     fn repeated_polls_produce_one_deadline_wakeup() {
+        let (clock, mut driver, timer) = paused_timer_driver();
         let (counter, waker) = counting_waker();
         let mut cx = Context::from_waker(&waker);
 
-        let mut sleep = pin!(sleep(Duration::from_millis(10)));
+        let deadline = timer.now() + Duration::from_secs(5);
+        let mut sleep = pin!(Sleep::new(timer, deadline));
 
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
 
-        std::thread::sleep(Duration::from_secs(1));
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
 
         assert_eq!(counter.count(), 1);
     }
 
     #[test]
-    fn dropping_sleep_does_not_cancel_helper() {
-        let (waker, wake_rx) = get_wake_channel();
+    fn dropping_pending_sleep_cancel_registration() {
+        let (_clock, mut driver, timer) = paused_timer_driver();
 
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
 
-        let mut sleep = Box::pin(sleep(Duration::from_millis(10)));
+        let deadline = timer.now() + Duration::from_secs(5);
+        let mut sleep = Box::pin(Sleep::new(timer, deadline));
 
         assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
 
+        assert_eq!(driver.next_deadline(), Some(deadline));
         drop(sleep);
-
-        wake_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("helper should have invoked retained waker");
+        assert_eq!(driver.next_deadline(), None);
     }
 }
