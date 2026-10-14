@@ -4,7 +4,7 @@ use std::{
     collections::{BinaryHeap, HashMap, hash_map::Entry},
     rc::Rc,
     task::Waker,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::time::clock::Clock;
@@ -155,6 +155,11 @@ impl TimerDriver {
 
             state.deadlines.pop();
         }
+    }
+
+    pub(crate) fn time_until_next_deadline(&mut self) -> Option<Duration> {
+        let deadline = self.next_deadline()?;
+        Some(deadline.saturating_duration_since(self.clock.now()))
     }
 }
 
@@ -320,5 +325,32 @@ mod tests {
         assert_eq!(counter_b.count(), 1);
         assert_eq!(counter_c.count(), 1);
         assert_eq!(driver.next_deadline(), None);
+    }
+
+    #[test]
+    fn timers_with_equal_deadlines_all_expire_once() {
+        let (clock, mut driver, handle) = paused_timer_driver();
+        let (counter_a, waker_a) = counting_waker();
+        let (counter_b, waker_b) = counting_waker();
+        let (counter_c, waker_c) = counting_waker();
+
+        let deadline = handle.now() + Duration::from_secs(5);
+
+        handle.register(deadline, waker_a);
+        handle.register(deadline, waker_b);
+        handle.register(deadline, waker_c);
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+
+        assert_eq!(counter_a.count(), 1);
+        assert_eq!(counter_b.count(), 1);
+        assert_eq!(counter_c.count(), 1);
+        assert_eq!(driver.next_deadline(), None);
+
+        driver.process_expired();
+
+        assert_eq!(counter_a.count(), 1);
+        assert_eq!(counter_b.count(), 1);
     }
 }

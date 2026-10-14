@@ -4,13 +4,13 @@ use std::{
     num::NonZeroU64,
     pin::pin,
     rc::Rc,
-    sync::mpsc::{self, RecvError, channel},
-    task::{Context, Poll, Waker},
+    sync::mpsc::{self, RecvTimeoutError, channel},
+    task::Poll,
 };
 
 use crate::{
     handle::Handle,
-    scheduling::{TaskPollOutcome, TaskSchedule},
+    scheduling::TaskSchedule,
     task::{Id, LocalTask, ROOT_TASK_ID},
     time::{clock::Clock, driver::TimerDriver},
 };
@@ -54,38 +54,43 @@ impl Executor {
         let mut future = pin!(future);
 
         let schedule = TaskSchedule::new(ROOT_TASK_ID, self.spawn_state.ready_tx.clone());
-
-        let waker = Waker::from(schedule.clone());
-        let mut context = Context::from_waker(&waker);
-
         schedule.request_schedule();
 
         loop {
-            self.drain_pending_spawns();
+            let id = self.next_ready_id();
 
-            match self.ready_rx.recv() {
-                Ok(ROOT_TASK_ID) => {
-                    schedule.begin_poll();
-
-                    match future.as_mut().poll(&mut context) {
-                        Poll::Pending => {
-                            schedule.finish_poll(Poll::Pending);
-                        }
-                        Poll::Ready(output) => {
-                            schedule.finish_poll(Poll::Ready(()));
-                            return output;
-                        }
-                    }
+            if id == ROOT_TASK_ID {
+                if let Poll::Ready(output) = schedule.poll(future.as_mut()) {
+                    return output;
                 }
-                Ok(id) => {
-                    self.poll_task(id);
-                }
-                Err(RecvError) => {
-                    unreachable!(
-                        "the executor's spawn state owns a sender while the executor is alive"
-                    );
-                }
+            } else {
+                self.poll_task(id);
             }
+        }
+    }
+
+    fn next_ready_id(&mut self) -> Id {
+        loop {
+            self.drain_pending_spawns();
+            self.timer_driver.process_expired();
+
+            let result = match self.timer_driver.time_until_next_deadline() {
+                Some(timeout) => self.ready_rx.recv_timeout(timeout),
+                None => self
+                    .ready_rx
+                    .recv()
+                    .map_err(|_| RecvTimeoutError::Disconnected),
+            };
+
+            match result {
+                Ok(id) => {
+                    return id;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    unreachable!("executor scheduling channel disconnected");
+                }
+            };
         }
     }
 
@@ -95,15 +100,9 @@ impl Executor {
             .get_mut(&id)
             .expect("ready queue contained a task that was not admitted to the executor");
 
-        let schedule = task.schedule.clone();
+        let result = task.schedule.poll(task.future.as_mut());
 
-        schedule.begin_poll();
-
-        let waker = schedule.waker();
-        let mut cx = Context::from_waker(&waker);
-        let result = task.future.as_mut().poll(&mut cx);
-
-        if let TaskPollOutcome::Complete = schedule.finish_poll(result) {
+        if result.is_ready() {
             self.tasks.remove(&id);
         }
     }
