@@ -24,8 +24,12 @@ pub(crate) struct Executor {
 
 impl Executor {
     pub(crate) fn new() -> (Self, Handle) {
+        Self::with_clock(Clock::new())
+    }
+
+    pub(crate) fn with_clock(clock: Clock) -> (Self, Handle) {
         let (ready_tx, ready_rx) = channel();
-        let (timer_driver, timer_handle) = TimerDriver::new(Clock::new());
+        let (timer_driver, timer_handle) = TimerDriver::new(clock);
         let spawn_state = Rc::new(SpawnState {
             ready_tx,
             pending_spawns: Default::default(),

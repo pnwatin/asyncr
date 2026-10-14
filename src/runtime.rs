@@ -1,4 +1,4 @@
-use crate::{executor::Executor, handle::Handle};
+use crate::{executor::Executor, handle::Handle, time::clock::Clock};
 
 pub struct Runtime {
     executor: Executor,
@@ -8,6 +8,12 @@ pub struct Runtime {
 impl Runtime {
     pub fn new() -> Self {
         let (executor, handle) = Executor::new();
+
+        Self { executor, handle }
+    }
+
+    pub(crate) fn with_clock(clock: Clock) -> Self {
+        let (executor, handle) = Executor::with_clock(clock);
 
         Self { executor, handle }
     }
