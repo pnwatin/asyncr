@@ -106,6 +106,19 @@ mod tests {
     }
 
     #[test]
+    fn zero_duration_sleep_is_immediately_ready() {
+        let (_clock, mut driver, timer) = paused_timer_driver();
+        let (counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let mut sleep = pin!(Sleep::new(timer.clone(), timer.now()));
+
+        assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Ready(()));
+        assert_eq!(driver.next_deadline(), None);
+        assert_eq!(counter.count(), 0);
+    }
+
+    #[test]
     fn sleep_expired_before_first_poll_is_ready() {
         let (clock, mut _driver, timer) = paused_timer_driver();
         let (counter, waker) = counting_waker();
