@@ -10,10 +10,7 @@ use crate::{
 
 pub fn sleep(handle: &Handle, duration: Duration) -> Sleep {
     let timer = handle.timer_handle.clone();
-    let deadline = timer
-        .now()
-        .checked_add(duration)
-        .expect("sleep duration exceed Instant's range");
+    let deadline = timer.now() + duration;
 
     Sleep::new(timer, deadline)
 }

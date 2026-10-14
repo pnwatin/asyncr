@@ -1,91 +1,88 @@
-#[cfg(test)]
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::time::Duration;
+use std::{cell::RefCell, rc::Rc};
 
 use std::time::Instant;
 
-#[cfg(not(test))]
-#[derive(Clone)]
-pub(crate) struct Clock;
+enum ClockMode {
+    Real { started_at: Instant, base: Instant },
+    Paused { now: Instant },
+}
 
-#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct Clock {
-    state: Rc<RefCell<ClockState>>,
+    state: Rc<RefCell<ClockMode>>,
 }
 
-#[cfg(test)]
-struct ClockState {
-    base: Instant,
-    unpaused_at: Option<Instant>,
-}
-
-#[cfg(not(test))]
-impl Clock {
-    pub(crate) fn new() -> Self {
-        Self
-    }
-
-    pub(crate) fn now(&self) -> Instant {
-        Instant::now()
-    }
-}
-
-#[cfg(test)]
 impl Clock {
     pub(crate) fn new() -> Self {
         let now = Instant::now();
         Self {
-            state: Rc::new(RefCell::new(ClockState {
+            state: Rc::new(RefCell::new(ClockMode::Real {
+                started_at: now,
                 base: now,
-                unpaused_at: Some(now),
             })),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new_paused() -> Self {
-        let now = Instant::now();
         Self {
-            state: Rc::new(RefCell::new(ClockState {
-                base: now,
-                unpaused_at: None,
+            state: Rc::new(RefCell::new(ClockMode::Paused {
+                now: Instant::now(),
             })),
         }
     }
 
     pub(crate) fn now(&self) -> Instant {
         let state = self.state.borrow();
-        match state.unpaused_at {
-            Some(instant) => state.base + Instant::now().duration_since(instant),
-            None => state.base,
+        match *state {
+            ClockMode::Real { started_at, base } => {
+                base + Instant::now().duration_since(started_at)
+            }
+            ClockMode::Paused { now } => now,
         }
     }
 
     pub(crate) fn pause(&self) {
         let mut state = self.state.borrow_mut();
 
-        let unpaused_at = state.unpaused_at.take().expect("clock is already paused");
-
-        state.base += Instant::now().duration_since(unpaused_at);
+        match *state {
+            ClockMode::Real { started_at, base } => {
+                *state = ClockMode::Paused {
+                    now: base + Instant::now().duration_since(started_at),
+                }
+            }
+            ClockMode::Paused { .. } => {
+                panic!("clock is already paused");
+            }
+        }
     }
 
     pub(crate) fn resume(&self) {
         let mut state = self.state.borrow_mut();
 
-        assert!(state.unpaused_at.is_none(), "clock is already running");
-        state.unpaused_at = Some(Instant::now());
+        match *state {
+            ClockMode::Paused { now } => {
+                *state = ClockMode::Real {
+                    started_at: Instant::now(),
+                    base: now,
+                }
+            }
+            ClockMode::Real { .. } => {
+                panic!("clock is already running");
+            }
+        }
     }
 
     pub(crate) fn advance(&self, duration: Duration) {
         let mut state = self.state.borrow_mut();
 
-        if state.unpaused_at.is_some() {
-            panic!("clock should be paused before advancing it");
+        match &mut *state {
+            ClockMode::Paused { now } => *now += duration,
+            ClockMode::Real { .. } => {
+                panic!("clock should be paused before advancing it");
+            }
         }
-
-        state.base = state
-            .base
-            .checked_add(duration)
-            .expect("clock advance exceeds Instant's range");
     }
 }
 
