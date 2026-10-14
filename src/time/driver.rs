@@ -161,6 +161,19 @@ impl TimerDriver {
         let deadline = self.next_deadline()?;
         Some(deadline.saturating_duration_since(self.clock.now()))
     }
+
+    pub(crate) fn advance_to_next_deadline_if_paused(&mut self) -> bool {
+        if !self.clock.is_paused() {
+            return false;
+        }
+
+        let Some(deadline) = self.next_deadline() else {
+            return false;
+        };
+
+        self.clock.advance_to(deadline);
+        true
+    }
 }
 
 struct TimerRegistration {

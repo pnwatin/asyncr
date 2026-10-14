@@ -84,6 +84,26 @@ impl Clock {
             }
         }
     }
+
+    pub(crate) fn advance_to(&self, instant: Instant) {
+        let mut state = self.state.borrow_mut();
+
+        match &mut *state {
+            ClockMode::Paused { now } => {
+                assert!(instant >= *now, "cannot move a paused clock backwards");
+                *now = instant
+            }
+            ClockMode::Real { .. } => {
+                panic!("clock should be paused before advancing it");
+            }
+        }
+    }
+
+    pub(crate) fn is_paused(&self) -> bool {
+        let state = self.state.borrow();
+
+        matches!(*state, ClockMode::Paused { .. })
+    }
 }
 
 #[cfg(test)]

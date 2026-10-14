@@ -4,7 +4,7 @@ use std::{
     num::NonZeroU64,
     pin::pin,
     rc::Rc,
-    sync::mpsc::{self, RecvTimeoutError, channel},
+    sync::mpsc::{self, RecvTimeoutError, TryRecvError, channel},
     task::Poll,
 };
 
@@ -77,6 +77,18 @@ impl Executor {
         loop {
             self.drain_pending_spawns();
             self.timer_driver.process_expired();
+
+            match self.ready_rx.try_recv() {
+                Ok(id) => return id,
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    unreachable!("executor scheduling channel disconnected");
+                }
+            }
+
+            if self.timer_driver.advance_to_next_deadline_if_paused() {
+                continue;
+            }
 
             let result = match self.timer_driver.time_until_next_deadline() {
                 Some(timeout) => self.ready_rx.recv_timeout(timeout),

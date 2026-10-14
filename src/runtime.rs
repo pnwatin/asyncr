@@ -39,7 +39,10 @@ impl Default for Runtime {
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::{Cell, RefCell},
         future::poll_fn,
+        pin::pin,
+        rc::Rc,
         sync::{
             Arc, Mutex,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -47,7 +50,10 @@ mod tests {
         },
         task::Poll,
         thread,
+        time::Duration,
     };
+
+    use crate::time::sleep;
 
     use super::*;
 
@@ -187,6 +193,74 @@ mod tests {
 
         assert_eq!(runtime.block_on(async { 42 }), 42);
         assert_eq!(runtime.block_on(async { 67 }), 67);
+    }
+
+    #[test]
+    fn paused_runtime_auto_advances_for_root_sleep() {
+        let clock = Clock::new_paused();
+        let start = clock.now();
+        let mut runtime = Runtime::with_clock(clock.clone());
+        let handle = runtime.handle();
+        let polls = Cell::new(0);
+        let mut sleep = pin!(sleep(&handle, Duration::from_secs(60 * 60)));
+
+        let output = runtime.block_on(poll_fn(|cx| {
+            polls.set(polls.get() + 1);
+            sleep.as_mut().poll(cx).map(|()| 42)
+        }));
+
+        assert_eq!(output, 42);
+        assert_eq!(polls.get(), 2);
+        assert_eq!(clock.now(), start + Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn paused_runtime_drives_sleeping_spawned_task() {
+        let clock = Clock::new_paused();
+        let start = clock.now();
+        let mut runtime = Runtime::with_clock(clock.clone());
+        let handle = runtime.handle();
+        let child_handle = handle.clone();
+
+        let child = handle.spawn(async move {
+            sleep(&child_handle, Duration::from_secs(5)).await;
+            42
+        });
+
+        let output = runtime.block_on(async { child.await.unwrap() });
+
+        assert_eq!(output, 42);
+        assert_eq!(clock.now(), start + Duration::from_secs(5));
+    }
+
+    #[test]
+    fn ready_task_can_insert_earlier_deadline_before_auto_advance() {
+        let clock = Clock::new_paused();
+        let start = clock.now();
+        let mut runtime = Runtime::with_clock(clock.clone());
+        let handle = runtime.handle();
+        let trace = Rc::new(RefCell::new(Vec::new()));
+
+        let root = {
+            let child_handle = handle.clone();
+            let child_trace = Rc::clone(&trace);
+            let root_trace = Rc::clone(&trace);
+
+            async move {
+                handle.spawn(async move {
+                    sleep(&child_handle, Duration::from_secs(5)).await;
+                    child_trace.borrow_mut().push("short");
+                });
+
+                sleep(&handle, Duration::from_secs(10)).await;
+                root_trace.borrow_mut().push("long");
+            }
+        };
+
+        runtime.block_on(root);
+
+        assert_eq!(trace.borrow().as_slice(), &["short", "long"]);
+        assert_eq!(clock.now(), start + Duration::from_secs(10));
     }
 
     #[test]
