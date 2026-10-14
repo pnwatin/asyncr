@@ -1,8 +1,9 @@
 mod state;
 
 use std::{
+    pin::Pin,
     sync::{Arc, Mutex, mpsc},
-    task::{Poll, Wake, Waker},
+    task::{Context, Poll, Wake, Waker},
 };
 
 use crate::task::Id;
@@ -23,6 +24,33 @@ impl TaskSchedule {
         })
     }
 
+    pub(super) fn poll<F>(self: &Arc<Self>, future: Pin<&mut F>) -> Poll<F::Output>
+    where
+        F: Future + ?Sized,
+    {
+        self.state.lock().unwrap().begin_poll();
+
+        let waker = self.waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let result = future.poll(&mut cx);
+
+        let outcome = match &result {
+            Poll::Ready(_) => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
+        };
+
+        let mut state = self.state.lock().unwrap();
+        let action = state.finish_poll(outcome);
+        drop(state);
+
+        if let ScheduleAction::Enqueue = action {
+            let _ = self.ready_tx.send(self.id);
+        }
+
+        result
+    }
+
     pub(super) fn request_schedule(&self) {
         let mut state = self.state.lock().unwrap();
         let action = state.wake();
@@ -33,35 +61,9 @@ impl TaskSchedule {
         }
     }
 
-    pub(super) fn begin_poll(&self) {
-        self.state.lock().unwrap().begin_poll();
-    }
-
-    pub(super) fn finish_poll(&self, poll_result: Poll<()>) -> TaskPollOutcome {
-        let mut state = self.state.lock().unwrap();
-
-        let action = state.finish_poll(poll_result);
-        drop(state);
-
-        match action {
-            ScheduleAction::None => TaskPollOutcome::Pending,
-            ScheduleAction::Enqueue => {
-                let _ = self.ready_tx.send(self.id);
-                TaskPollOutcome::Pending
-            }
-            ScheduleAction::Complete => TaskPollOutcome::Complete,
-        }
-    }
-
-    pub(super) fn waker(self: &Arc<Self>) -> Waker {
+    fn waker(self: &Arc<Self>) -> Waker {
         Waker::from(self.clone())
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum TaskPollOutcome {
-    Pending,
-    Complete,
 }
 
 impl Wake for TaskSchedule {
@@ -77,7 +79,9 @@ impl Wake for TaskSchedule {
 #[cfg(test)]
 mod tests {
     use std::{
+        future::poll_fn,
         num::NonZeroU64,
+        pin::pin,
         sync::mpsc::{TryRecvError, channel},
     };
 
@@ -122,10 +126,9 @@ mod tests {
 
         assert_eq!(ready_rx.try_recv(), Ok(task_id));
 
-        schedule.begin_poll();
-        let outcome = schedule.finish_poll(Poll::Pending);
+        let mut future = pin!(poll_fn(|_| Poll::<()>::Pending));
+        assert_eq!(schedule.poll(future.as_mut()), Poll::Pending);
 
-        assert_eq!(outcome, TaskPollOutcome::Pending);
         assert_eq!(ready_rx.try_recv(), Err(TryRecvError::Empty));
 
         schedule.waker().wake();
@@ -144,17 +147,16 @@ mod tests {
 
         assert_eq!(ready_rx.try_recv(), Ok(task_id));
 
-        schedule.begin_poll();
-        let waker = schedule.waker();
+        let mut future = pin!(poll_fn(|cx| {
+            cx.waker().wake_by_ref();
+            cx.waker().wake_by_ref();
+            cx.waker().wake_by_ref();
 
-        waker.wake_by_ref();
-        waker.wake_by_ref();
-        waker.wake_by_ref();
+            assert_eq!(ready_rx.try_recv(), Err(TryRecvError::Empty));
 
-        assert_eq!(ready_rx.try_recv(), Err(TryRecvError::Empty));
-
-        let outcome = schedule.finish_poll(Poll::Pending);
-        assert_eq!(outcome, TaskPollOutcome::Pending);
+            Poll::<()>::Pending
+        }));
+        assert_eq!(schedule.poll(future.as_mut()), Poll::Pending);
         assert_eq!(ready_rx.try_recv(), Ok(task_id));
         assert_eq!(ready_rx.try_recv(), Err(TryRecvError::Empty));
     }
@@ -170,14 +172,14 @@ mod tests {
 
         assert_eq!(ready_rx.try_recv(), Ok(task_id));
 
-        schedule.begin_poll();
         let waker = schedule.waker();
+        let mut future = pin!(poll_fn(|cx| {
+            cx.waker().wake_by_ref();
 
-        waker.wake_by_ref();
+            Poll::Ready(42)
+        }));
+        assert_eq!(schedule.poll(future.as_mut()), Poll::Ready(42));
 
-        let outcome = schedule.finish_poll(Poll::Ready(()));
-
-        assert_eq!(outcome, TaskPollOutcome::Complete);
         assert_eq!(ready_rx.try_recv(), Err(TryRecvError::Empty));
 
         waker.wake_by_ref();
