@@ -33,6 +33,17 @@ impl Sleep {
             registration: None,
         }
     }
+
+    pub fn reset(&mut self, deadline: Instant) {
+        self.deadline = deadline;
+
+        if let Some(id) = self.registration
+            && !self.timer.reschedule(id, deadline)
+        {
+            self.registration = None
+        }
+    }
+
     pub fn deadline(&self) -> Instant {
         self.deadline
     }

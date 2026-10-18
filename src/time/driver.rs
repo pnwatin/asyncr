@@ -67,16 +67,17 @@ impl TimerHandle {
         self.state.borrow_mut().registrations.remove(&id);
     }
 
-    pub(crate) fn reschedule(&self, id: TimerId, new_deadline: Instant) {
+    pub(crate) fn reschedule(&self, id: TimerId, new_deadline: Instant) -> bool {
         let mut state = self.state.borrow_mut();
 
-        let registration = state
-            .registrations
-            .get_mut(&id)
-            .expect("cannot reschedule an inactive timer");
+        let Some(registration) = state.registrations.get_mut(&id) else {
+            return false;
+        };
 
         registration.deadline = new_deadline;
         state.deadlines.push(Reverse((new_deadline, id)));
+
+        true
     }
 
     pub(crate) fn now(&self) -> Instant {
