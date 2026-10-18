@@ -15,8 +15,8 @@ pub fn sleep(handle: &Handle, duration: Duration) -> Sleep {
     Sleep::new(timer, deadline)
 }
 
-pub fn sleep_until(handle: &Handle, instant: Instant) -> Sleep {
-    Sleep::new(handle.timer_handle.clone(), instant)
+pub fn sleep_until(handle: &Handle, deadline: Instant) -> Sleep {
+    Sleep::new(handle.timer_handle.clone(), deadline)
 }
 
 pub struct Sleep {
@@ -26,7 +26,7 @@ pub struct Sleep {
 }
 
 impl Sleep {
-    fn new(timer: TimerHandle, deadline: Instant) -> Self {
+    pub(super) fn new(timer: TimerHandle, deadline: Instant) -> Self {
         Self {
             deadline,
             timer,
@@ -79,12 +79,9 @@ impl Drop for Sleep {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        pin::pin,
-        task::{Context, Waker},
-    };
+    use std::{pin::pin, task::Context};
 
-    use crate::test_utils::{counting_waker, get_wake_channel, paused_timer_driver};
+    use crate::test_utils::{counting_waker, get_wake_channel, noop_context, paused_timer_driver};
 
     use super::*;
 
@@ -199,12 +196,10 @@ mod tests {
     fn dropping_pending_sleep_cancels_registration() {
         let (_clock, mut driver, timer) = paused_timer_driver();
 
-        let mut cx = Context::from_waker(Waker::noop());
-
         let deadline = timer.now() + Duration::from_secs(5);
         let mut sleep = Box::pin(Sleep::new(timer, deadline));
 
-        assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(sleep.as_mut().poll(&mut noop_context()), Poll::Pending);
 
         assert_eq!(driver.next_deadline(), Some(deadline));
         drop(sleep);
