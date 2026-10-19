@@ -90,17 +90,38 @@ poll and when `Waker::will_wake` is useful.
 
 Concept: many logical timers should share one physical waiting mechanism.
 
-- [ ] Replace one-thread-per-delay with a runtime timer driver.
-- [ ] Order deadlines with a suitable data structure.
-- [ ] Sleep until the next deadline or an earlier timer is inserted.
-- [ ] Give timer registrations stable identities.
-- [ ] Remove or ignore cancelled timers safely.
-- [ ] Define behavior for equal deadlines and very long durations.
-- [ ] Add timeout and interval futures.
-- [ ] Test timers with a controllable clock rather than wall-clock sleeps.
+- [x] Replace one-thread-per-delay with a runtime timer driver.
+- [x] Order deadlines with a suitable data structure.
+- [x] Sleep until the next deadline or an earlier timer is inserted.
+- [x] Give timer registrations stable identities.
+- [x] Remove or ignore cancelled timers safely.
+- [x] Define behavior for equal deadlines and very long durations.
+- [x] Add timeout and interval futures.
+- [x] Test timers with a controllable clock rather than wall-clock sleeps.
 
 Completion check: explain how the scheduler and timer driver avoid both busy
 polling and oversleeping a newly inserted earlier deadline.
+
+## 5.5. Runtime Context And Immediate Ergonomics
+
+Concept: convenient APIs may discover the runtime they are executing on, but
+the ownership of tasks and resources must remain understandable.
+
+- [ ] Store the currently entered runtime handle in thread-local context.
+- [ ] Enter that context for the duration of `Runtime::block_on` and restore the
+  previous context afterward.
+- [ ] Add fallible and panicking ways to retrieve the current handle.
+- [ ] Add a free-standing `spawn` function that uses the current runtime.
+- [ ] Let `sleep`, `sleep_until`, and timeout functions use the current runtime
+  without requiring an explicit handle.
+- [ ] Keep explicit handles available for code running outside an entered
+  runtime and for making ownership explicit.
+- [ ] Reject accidental nested runtimes for now, with a clear diagnostic.
+- [ ] Test context installation and restoration, access outside a runtime, and
+  nested-runtime behavior.
+
+Completion check: explain when runtime context exists, why it is thread-local,
+and how a spawned task or timer finds the runtime subsystem that owns it.
 
 ## 6. Non-Blocking I/O And The Reactor
 
@@ -262,20 +283,20 @@ Concept: unavoidable blocking operations need isolation from async workers.
 Completion check: demonstrate that saturating the blocking pool does not stop
 timers and network tasks from progressing.
 
-## 16. Runtime Context And Ergonomics
+## 16. Runtime Configuration And Ergonomics
 
-Concept: convenient APIs need an explicit answer to "which runtime owns this
-resource?"
+Concept: once runtime subsystems and execution models are understood, stable
+APIs can expose their configuration without hiding ownership or behavior.
 
-- [ ] Introduce runtime and spawn handles deliberately.
-- [ ] Decide whether APIs require an entered runtime context.
-- [ ] Detect accidental nested runtimes or document their behavior.
 - [ ] Add a builder for thread count and subsystem configuration.
 - [ ] Explore current-thread versus multithreaded runtime flavors.
+- [ ] Revisit which APIs should use the current runtime and which should require
+  an explicit handle.
+- [ ] Revisit nested-runtime behavior once multiple runtime flavors exist.
 - [ ] Consider macros only after the underlying APIs are stable and understood.
 
-Completion check: explain how any timer, I/O handle, or spawned task finds the
-runtime subsystem it depends on.
+Completion check: explain which behaviors each configuration option changes and
+why convenience APIs do not make runtime ownership ambiguous.
 
 ## 17. Observability And Debugging
 
