@@ -49,7 +49,11 @@ impl Sleep {
     }
 
     pub fn is_elapsed(&self) -> bool {
-        self.timer.now() >= self.deadline()
+        self.now() >= self.deadline()
+    }
+
+    pub(super) fn now(&self) -> Instant {
+        self.timer.now()
     }
 }
 
