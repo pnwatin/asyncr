@@ -208,6 +208,33 @@ mod tests {
     }
 
     #[test]
+    fn resetting_after_expiration_registers_the_new_deadline() {
+        let (clock, mut driver, timer) = paused_timer_driver();
+        let (counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+        let first_deadline = timer.now() + Duration::from_secs(5);
+        let mut sleep = Box::pin(Sleep::new(timer, first_deadline));
+
+        assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+        assert_eq!(counter.count(), 1);
+
+        let second_deadline = clock.now() + Duration::from_secs(5);
+        sleep.as_mut().get_mut().reset(second_deadline);
+
+        assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(driver.next_deadline(), Some(second_deadline));
+
+        clock.advance(Duration::from_secs(5));
+        driver.process_expired();
+
+        assert_eq!(counter.count(), 2);
+        assert_eq!(sleep.as_mut().poll(&mut cx), Poll::Ready(()));
+    }
+
+    #[test]
     fn dropping_pending_sleep_cancels_registration() {
         let (_clock, mut driver, timer) = paused_timer_driver();
 

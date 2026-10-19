@@ -86,6 +86,7 @@ impl Executor {
                 }
             }
 
+            #[cfg(test)]
             if self.timer_driver.advance_to_next_deadline_if_paused() {
                 continue;
             }

@@ -1,18 +1,36 @@
-use std::time::Duration;
-use std::{cell::RefCell, rc::Rc};
-
 use std::time::Instant;
 
+#[cfg(test)]
+use std::{cell::RefCell, rc::Rc, time::Duration};
+
+#[cfg(test)]
 enum ClockMode {
     Real { started_at: Instant, base: Instant },
     Paused { now: Instant },
 }
 
+#[cfg(not(test))]
+#[derive(Clone)]
+pub(crate) struct Clock;
+
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct Clock {
     state: Rc<RefCell<ClockMode>>,
 }
 
+#[cfg(not(test))]
+impl Clock {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+#[cfg(test)]
 impl Clock {
     pub(crate) fn new() -> Self {
         let now = Instant::now();
@@ -24,7 +42,6 @@ impl Clock {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn new_paused() -> Self {
         Self {
             state: Rc::new(RefCell::new(ClockMode::Paused {

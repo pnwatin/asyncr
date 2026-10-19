@@ -1,4 +1,7 @@
-use crate::{executor::Executor, handle::Handle, time::clock::Clock};
+use crate::{executor::Executor, handle::Handle};
+
+#[cfg(test)]
+use crate::time::clock::Clock;
 
 pub struct Runtime {
     executor: Executor,
@@ -12,6 +15,7 @@ impl Runtime {
         Self { executor, handle }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_clock(clock: Clock) -> Self {
         let (executor, handle) = Executor::with_clock(clock);
 
@@ -40,7 +44,7 @@ impl Default for Runtime {
 mod tests {
     use std::{
         cell::{Cell, RefCell},
-        future::poll_fn,
+        future::{pending, poll_fn},
         pin::pin,
         rc::Rc,
         sync::{
@@ -53,7 +57,7 @@ mod tests {
         time::Duration,
     };
 
-    use crate::time::sleep;
+    use crate::time::{Elapsed, interval, sleep, timeout};
 
     use super::*;
 
@@ -231,6 +235,46 @@ mod tests {
 
         assert_eq!(output, 42);
         assert_eq!(clock.now(), start + Duration::from_secs(5));
+    }
+
+    #[test]
+    fn paused_runtime_drives_timeout_through_public_api() {
+        let clock = Clock::new_paused();
+        let start = clock.now();
+        let mut runtime = Runtime::with_clock(clock.clone());
+        let handle = runtime.handle();
+
+        let result = runtime.block_on(timeout(&handle, Duration::from_secs(5), pending::<()>()));
+
+        assert_eq!(result, Err(Elapsed));
+        assert_eq!(clock.now(), start + Duration::from_secs(5));
+    }
+
+    #[test]
+    fn paused_runtime_drives_interval_through_public_api() {
+        let clock = Clock::new_paused();
+        let start = clock.now();
+        let mut runtime = Runtime::with_clock(clock.clone());
+        let handle = runtime.handle();
+        let mut interval = interval(&handle, Duration::from_secs(5));
+
+        let ticks = runtime.block_on(async {
+            let first = interval.tick().await;
+            let second = interval.tick().await;
+
+            (first, second)
+        });
+
+        assert_eq!(ticks, (start, start + Duration::from_secs(5)));
+        assert_eq!(clock.now(), start + Duration::from_secs(5));
+    }
+
+    #[test]
+    fn running_runtime_drives_sleep_through_recv_timeout() {
+        let mut runtime = Runtime::new();
+        let handle = runtime.handle();
+
+        runtime.block_on(sleep(&handle, Duration::from_millis(1)));
     }
 
     #[test]

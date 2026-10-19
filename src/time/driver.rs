@@ -163,6 +163,7 @@ impl TimerDriver {
         Some(deadline.saturating_duration_since(self.clock.now()))
     }
 
+    #[cfg(test)]
     pub(crate) fn advance_to_next_deadline_if_paused(&mut self) -> bool {
         if !self.clock.is_paused() {
             return false;
