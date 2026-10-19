@@ -1,4 +1,6 @@
 use std::{
+    error::Error,
+    fmt::{self, Display, Formatter},
     pin::Pin,
     task::Poll,
     time::{Duration, Instant},
@@ -41,6 +43,14 @@ impl<F> Timeout<F> {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Elapsed;
+
+impl Display for Elapsed {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("deadline has elapsed")
+    }
+}
+
+impl Error for Elapsed {}
 
 impl<F> Future for Timeout<F>
 where
