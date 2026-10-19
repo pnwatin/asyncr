@@ -15,6 +15,15 @@ pub struct Handle {
 }
 
 impl Handle {
+    pub fn try_current() -> Option<Self> {
+        context::try_current()
+    }
+
+    #[track_caller]
+    pub fn current() -> Self {
+        context::current()
+    }
+
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future + 'static,
