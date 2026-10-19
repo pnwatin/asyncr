@@ -1,4 +1,4 @@
-use crate::{executor::Executor, handle::Handle};
+use crate::{EnterGuard, executor::Executor, handle::Handle};
 
 #[cfg(test)]
 use crate::time::clock::Clock;
@@ -32,6 +32,10 @@ impl Runtime {
     {
         self.executor.block_on(future)
     }
+
+    pub fn enter(&self) -> EnterGuard {
+        self.handle.enter()
+    }
 }
 
 impl Default for Runtime {
@@ -57,9 +61,27 @@ mod tests {
         time::Duration,
     };
 
-    use crate::time::{Elapsed, interval, sleep, timeout};
+    use crate::{
+        context,
+        time::{Elapsed, interval, sleep, timeout},
+    };
 
     use super::*;
+
+    #[test]
+    fn enter_makes_runtime_handle_current_until_guard_is_dropped() {
+        let runtime = Runtime::new();
+        let expected = runtime.handle();
+
+        let guard = runtime.enter();
+
+        let current = context::current();
+        assert!(Rc::ptr_eq(&current.spawn_state, &expected.spawn_state));
+
+        drop(guard);
+
+        assert!(context::try_current().is_none());
+    }
 
     #[test]
     fn block_on_returns_root_output() {

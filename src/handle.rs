@@ -1,7 +1,8 @@
-use std::rc::Rc;
+use std::{marker::PhantomData, rc::Rc};
 
 use crate::{
     catch::CatchUnwind,
+    context,
     executor::SpawnState,
     join::{JoinError, JoinHandle, join_pair},
     time::driver::TimerHandle,
@@ -32,5 +33,26 @@ impl Handle {
         self.spawn_state.submit(task_future);
 
         handle
+    }
+
+    pub fn enter(&self) -> EnterGuard {
+        context::try_set_current(self).expect(
+            "cannot enter an asyncr runtime while another runtime is active on this thread",
+        );
+
+        EnterGuard {
+            _not_send: PhantomData,
+        }
+    }
+}
+
+#[must_use = "the runtime context remains entered only while this guard is alive"]
+pub struct EnterGuard {
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl Drop for EnterGuard {
+    fn drop(&mut self) {
+        context::clear_current();
     }
 }

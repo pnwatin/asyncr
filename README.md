@@ -292,7 +292,10 @@ APIs can expose their configuration without hiding ownership or behavior.
 - [ ] Explore current-thread versus multithreaded runtime flavors.
 - [ ] Revisit which APIs should use the current runtime and which should require
   an explicit handle.
-- [ ] Revisit nested-runtime behavior once multiple runtime flavors exist.
+- [ ] Decide whether entered handle contexts may nest, including LIFO guard
+  enforcement and out-of-order drop behavior.
+- [ ] Separately define or reject nested runtime execution, such as calling
+  `Runtime::block_on` while another runtime is actively being driven.
 - [ ] Consider macros only after the underlying APIs are stable and understood.
 
 Completion check: explain which behaviors each configuration option changes and

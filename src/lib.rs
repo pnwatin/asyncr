@@ -1,4 +1,5 @@
 mod catch;
+mod context;
 mod executor;
 mod handle;
 mod join;
@@ -10,6 +11,6 @@ pub mod time;
 #[cfg(test)]
 mod test_utils;
 
-pub use handle::Handle;
+pub use handle::{EnterGuard, Handle};
 pub use join::{JoinError, JoinHandle};
 pub use runtime::Runtime;
