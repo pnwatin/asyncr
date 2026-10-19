@@ -95,7 +95,11 @@ impl Clock {
         let mut state = self.state.borrow_mut();
 
         match &mut *state {
-            ClockMode::Paused { now } => *now += duration,
+            ClockMode::Paused { now } => {
+                *now = now
+                    .checked_add(duration)
+                    .expect("clock advance exceeds the supported range")
+            }
             ClockMode::Real { .. } => {
                 panic!("clock should be paused before advancing it");
             }

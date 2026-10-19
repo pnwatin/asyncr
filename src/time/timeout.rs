@@ -8,14 +8,14 @@ use std::{
 
 use crate::{
     Handle,
-    time::{Sleep, sleep_until},
+    time::{Sleep, deadline_after, sleep_until},
 };
 
 pub fn timeout<F>(handle: &Handle, duration: Duration, future: F) -> Timeout<F>
 where
     F: Future,
 {
-    let deadline = handle.timer_handle.now() + duration;
+    let deadline = deadline_after(handle.timer_handle.now(), duration);
 
     timeout_at(handle, deadline, future)
 }

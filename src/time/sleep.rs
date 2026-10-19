@@ -5,12 +5,15 @@ use std::{
 
 use crate::{
     Handle,
-    time::driver::{TimerHandle, TimerId},
+    time::{
+        deadline_after,
+        driver::{TimerHandle, TimerId},
+    },
 };
 
 pub fn sleep(handle: &Handle, duration: Duration) -> Sleep {
     let timer = handle.timer_handle.clone();
-    let deadline = timer.now() + duration;
+    let deadline = deadline_after(timer.now(), duration);
 
     Sleep::new(timer, deadline)
 }

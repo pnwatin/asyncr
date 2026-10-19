@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     Handle,
-    time::{Sleep, sleep_until},
+    time::{Sleep, deadline_after, sleep_until},
 };
 
 pub fn interval(handle: &Handle, period: Duration) -> Interval {
@@ -39,13 +39,13 @@ pub enum MissedTickBehavior {
 impl MissedTickBehavior {
     fn next_deadline(&self, deadline: Instant, now: Instant, period: Duration) -> Instant {
         match self {
-            MissedTickBehavior::Burst => deadline + period,
-            MissedTickBehavior::Delay => now + period,
+            MissedTickBehavior::Burst => deadline_after(deadline, period),
+            MissedTickBehavior::Delay => deadline_after(now, period),
             MissedTickBehavior::Skip => {
                 let elapsed = now.duration_since(deadline);
                 let remainder = Duration::from_nanos_u128(elapsed.as_nanos() % period.as_nanos());
 
-                now + period - remainder
+                deadline_after(now, period - remainder)
             }
         }
     }
@@ -74,12 +74,13 @@ impl Interval {
         let deadline = self.sleep.deadline();
         let now = self.sleep.now();
 
-        let next_deadline = if now > deadline + Self::MISSED_TICK_GRACE_DELAY {
-            self.missed_tick_behavior
-                .next_deadline(deadline, now, self.period)
-        } else {
-            deadline + self.period
-        };
+        let next_deadline =
+            if now.saturating_duration_since(deadline) > Self::MISSED_TICK_GRACE_DELAY {
+                self.missed_tick_behavior
+                    .next_deadline(deadline, now, self.period)
+            } else {
+                deadline_after(deadline, self.period)
+            };
 
         self.sleep.reset(next_deadline);
 
@@ -95,11 +96,11 @@ impl Interval {
     }
 
     pub fn reset_after(&mut self, after: Duration) {
-        self.reset_at(self.sleep.now() + after);
+        self.reset_at(deadline_after(self.sleep.now(), after));
     }
 
     pub fn reset(&mut self) {
-        self.reset_at(self.sleep.now() + self.period);
+        self.reset_at(deadline_after(self.sleep.now(), self.period));
     }
 
     pub fn reset_immediately(&mut self) {
