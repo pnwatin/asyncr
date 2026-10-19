@@ -7,16 +7,27 @@ use std::{
 
 use crate::{
     Handle,
-    time::{Sleep, deadline_after, sleep_until},
+    time::{Sleep, deadline_after},
 };
 
-pub fn interval(handle: &Handle, period: Duration) -> Interval {
-    interval_at(handle, handle.timer_handle.now(), period)
+#[track_caller]
+pub fn interval(period: Duration) -> Interval {
+    let handle = Handle::current();
+    let start = handle.timer_handle.now();
+
+    Interval::new(
+        Sleep::new(handle.timer_handle.clone(), start),
+        period,
+        MissedTickBehavior::default(),
+    )
 }
 
-pub fn interval_at(handle: &Handle, start: Instant, period: Duration) -> Interval {
+#[track_caller]
+pub fn interval_at(start: Instant, period: Duration) -> Interval {
+    let handle = Handle::current();
+
     Interval::new(
-        sleep_until(handle, start),
+        Sleep::new(handle.timer_handle.clone(), start),
         period,
         MissedTickBehavior::default(),
     )
@@ -329,5 +340,17 @@ mod tests {
         let start = timer.now();
 
         let _interval = new_interval(timer, start, Duration::ZERO);
+    }
+
+    #[test]
+    #[should_panic(expected = "no asyncr runtime is currently entered on this thread")]
+    fn public_interval_requires_an_entered_runtime() {
+        interval(Duration::from_secs(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "no asyncr runtime is currently entered on this thread")]
+    fn public_interval_at_requires_an_entered_runtime() {
+        interval_at(Instant::now(), Duration::from_secs(1));
     }
 }

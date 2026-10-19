@@ -290,9 +290,10 @@ mod tests {
         let clock = Clock::new_paused();
         let start = clock.now();
         let mut runtime = Runtime::with_clock(clock.clone());
-        let handle = runtime.handle();
         let polls = Cell::new(0);
-        let mut sleep = pin!(sleep(&handle, Duration::from_secs(60 * 60)));
+        let guard = runtime.enter();
+        let mut sleep = pin!(sleep(Duration::from_secs(60 * 60)));
+        drop(guard);
 
         let output = runtime.block_on(poll_fn(|cx| {
             polls.set(polls.get() + 1);
@@ -310,10 +311,9 @@ mod tests {
         let start = clock.now();
         let mut runtime = Runtime::with_clock(clock.clone());
         let handle = runtime.handle();
-        let child_handle = handle.clone();
 
         let child = handle.spawn(async move {
-            sleep(&child_handle, Duration::from_secs(5)).await;
+            sleep(Duration::from_secs(5)).await;
             42
         });
 
@@ -328,9 +328,9 @@ mod tests {
         let clock = Clock::new_paused();
         let start = clock.now();
         let mut runtime = Runtime::with_clock(clock.clone());
-        let handle = runtime.handle();
 
-        let result = runtime.block_on(timeout(&handle, Duration::from_secs(5), pending::<()>()));
+        let result =
+            runtime.block_on(async { timeout(Duration::from_secs(5), pending::<()>()).await });
 
         assert_eq!(result, Err(Elapsed));
         assert_eq!(clock.now(), start + Duration::from_secs(5));
@@ -341,10 +341,9 @@ mod tests {
         let clock = Clock::new_paused();
         let start = clock.now();
         let mut runtime = Runtime::with_clock(clock.clone());
-        let handle = runtime.handle();
-        let mut interval = interval(&handle, Duration::from_secs(5));
 
         let ticks = runtime.block_on(async {
+            let mut interval = interval(Duration::from_secs(5));
             let first = interval.tick().await;
             let second = interval.tick().await;
 
@@ -358,9 +357,10 @@ mod tests {
     #[test]
     fn running_runtime_drives_sleep_through_recv_timeout() {
         let mut runtime = Runtime::new();
-        let handle = runtime.handle();
 
-        runtime.block_on(sleep(&handle, Duration::from_millis(1)));
+        runtime.block_on(async {
+            sleep(Duration::from_millis(1)).await;
+        });
     }
 
     #[test]
@@ -372,17 +372,16 @@ mod tests {
         let trace = Rc::new(RefCell::new(Vec::new()));
 
         let root = {
-            let child_handle = handle.clone();
             let child_trace = Rc::clone(&trace);
             let root_trace = Rc::clone(&trace);
 
             async move {
                 handle.spawn(async move {
-                    sleep(&child_handle, Duration::from_secs(5)).await;
+                    sleep(Duration::from_secs(5)).await;
                     child_trace.borrow_mut().push("short");
                 });
 
-                sleep(&handle, Duration::from_secs(10)).await;
+                sleep(Duration::from_secs(10)).await;
                 root_trace.borrow_mut().push("long");
             }
         };

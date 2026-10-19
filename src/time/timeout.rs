@@ -8,23 +8,30 @@ use std::{
 
 use crate::{
     Handle,
-    time::{Sleep, deadline_after, sleep_until},
+    time::{Sleep, deadline_after},
 };
 
-pub fn timeout<F>(handle: &Handle, duration: Duration, future: F) -> Timeout<F>
+#[track_caller]
+pub fn timeout<F>(duration: Duration, future: F) -> Timeout<F>
 where
     F: Future,
 {
+    let handle = Handle::current();
     let deadline = deadline_after(handle.timer_handle.now(), duration);
+    let sleep = Sleep::new(handle.timer_handle.clone(), deadline);
 
-    timeout_at(handle, deadline, future)
+    Timeout::new(sleep, future)
 }
 
-pub fn timeout_at<F>(handle: &Handle, deadline: Instant, future: F) -> Timeout<F>
+#[track_caller]
+pub fn timeout_at<F>(deadline: Instant, future: F) -> Timeout<F>
 where
     F: Future,
 {
-    Timeout::new(sleep_until(handle, deadline), future)
+    let handle = Handle::current();
+    let sleep = Sleep::new(handle.timer_handle.clone(), deadline);
+
+    Timeout::new(sleep, future)
 }
 
 pub struct Timeout<F> {
@@ -248,5 +255,17 @@ mod tests {
 
         assert!(dropped.get());
         assert_eq!(driver.next_deadline(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "no asyncr runtime is currently entered on this thread")]
+    fn public_timeout_requires_an_entered_runtime() {
+        timeout(Duration::from_secs(1), pending::<()>());
+    }
+
+    #[test]
+    #[should_panic(expected = "no asyncr runtime is currently entered on this thread")]
+    fn public_timeout_at_requires_an_entered_runtime() {
+        timeout_at(Instant::now(), pending::<()>());
     }
 }

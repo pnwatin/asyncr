@@ -11,14 +11,19 @@ use crate::{
     },
 };
 
-pub fn sleep(handle: &Handle, duration: Duration) -> Sleep {
+#[track_caller]
+pub fn sleep(duration: Duration) -> Sleep {
+    let handle = Handle::current();
     let timer = handle.timer_handle.clone();
     let deadline = deadline_after(timer.now(), duration);
 
     Sleep::new(timer, deadline)
 }
 
-pub fn sleep_until(handle: &Handle, deadline: Instant) -> Sleep {
+#[track_caller]
+pub fn sleep_until(deadline: Instant) -> Sleep {
+    let handle = Handle::current();
+
     Sleep::new(handle.timer_handle.clone(), deadline)
 }
 
@@ -249,5 +254,17 @@ mod tests {
         assert_eq!(driver.next_deadline(), Some(deadline));
         drop(sleep);
         assert_eq!(driver.next_deadline(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "no asyncr runtime is currently entered on this thread")]
+    fn public_sleep_requires_an_entered_runtime() {
+        sleep(Duration::from_secs(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "no asyncr runtime is currently entered on this thread")]
+    fn public_sleep_until_requires_an_entered_runtime() {
+        sleep_until(Instant::now() + Duration::from_secs(1));
     }
 }
