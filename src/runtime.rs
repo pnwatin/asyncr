@@ -30,6 +30,7 @@ impl Runtime {
     where
         F: Future,
     {
+        let _guard = self.enter();
         self.executor.block_on(future)
     }
 
@@ -49,6 +50,7 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         future::{pending, poll_fn},
+        panic::{AssertUnwindSafe, catch_unwind},
         pin::pin,
         rc::Rc,
         sync::{
@@ -61,10 +63,7 @@ mod tests {
         time::Duration,
     };
 
-    use crate::{
-        context,
-        time::{Elapsed, interval, sleep, timeout},
-    };
+    use crate::time::{Elapsed, interval, sleep, timeout};
 
     use super::*;
 
@@ -75,12 +74,77 @@ mod tests {
 
         let guard = runtime.enter();
 
-        let current = context::current();
+        let current = Handle::current();
         assert!(Rc::ptr_eq(&current.spawn_state, &expected.spawn_state));
 
         drop(guard);
 
-        assert!(context::try_current().is_none());
+        assert!(Handle::try_current().is_none());
+    }
+
+    #[test]
+    fn block_on_enters_runtime_context_for_root_future() {
+        let mut runtime = Runtime::new();
+        let expected = runtime.handle();
+
+        assert!(Handle::try_current().is_none());
+
+        let saw_expected_runtime = runtime.block_on(async {
+            let current = Handle::current();
+            Rc::ptr_eq(&current.spawn_state, &expected.spawn_state)
+        });
+
+        assert!(saw_expected_runtime);
+        assert!(Handle::try_current().is_none());
+    }
+
+    #[test]
+    fn block_on_enters_runtime_context_for_spawned_tasks() {
+        let mut runtime = Runtime::new();
+        let handle = runtime.handle();
+        let expected = handle.clone();
+
+        let saw_expected_runtime = runtime.block_on(async move {
+            handle
+                .spawn(async move {
+                    let current = Handle::current();
+                    Rc::ptr_eq(&current.spawn_state, &expected.spawn_state)
+                })
+                .await
+                .unwrap()
+        });
+
+        assert!(saw_expected_runtime);
+    }
+
+    #[test]
+    fn block_on_clears_runtime_context_after_root_panic() {
+        let mut runtime = Runtime::new();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                assert!(Handle::try_current().is_some());
+                panic!("root future panicked");
+            });
+        }));
+
+        assert!(result.is_err());
+        assert!(Handle::try_current().is_none());
+        assert_eq!(runtime.block_on(async { 42 }), 42);
+    }
+
+    #[test]
+    fn block_on_rejects_an_already_entered_context_without_replacing_it() {
+        let outer_runtime = Runtime::new();
+        let outer_handle = outer_runtime.handle();
+        let _outer_guard = outer_runtime.enter();
+        let mut inner_runtime = Runtime::new();
+
+        let result = catch_unwind(AssertUnwindSafe(|| inner_runtime.block_on(async {})));
+
+        assert!(result.is_err());
+        let current = Handle::current();
+        assert!(Rc::ptr_eq(&current.spawn_state, &outer_handle.spawn_state));
     }
 
     #[test]

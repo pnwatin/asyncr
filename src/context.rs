@@ -29,6 +29,7 @@ pub(crate) fn try_current() -> Option<Handle> {
     CONTEXT.with_borrow(|ctx| ctx.clone())
 }
 
+#[track_caller]
 pub(crate) fn current() -> Handle {
     try_current().expect("no asyncr runtime is currently entered on this thread")
 }
