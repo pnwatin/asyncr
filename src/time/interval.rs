@@ -37,12 +37,12 @@ pub enum MissedTickBehavior {
 }
 
 impl MissedTickBehavior {
-    fn next_timeout(&self, timeout: Instant, now: Instant, period: Duration) -> Instant {
+    fn next_deadline(&self, deadline: Instant, now: Instant, period: Duration) -> Instant {
         match self {
-            MissedTickBehavior::Burst => timeout + period,
+            MissedTickBehavior::Burst => deadline + period,
             MissedTickBehavior::Delay => now + period,
             MissedTickBehavior::Skip => {
-                let elapsed = now.duration_since(timeout);
+                let elapsed = now.duration_since(deadline);
                 let remainder = Duration::from_nanos_u128(elapsed.as_nanos() % period.as_nanos());
 
                 now + period - remainder
@@ -71,19 +71,19 @@ impl Interval {
     pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<Instant> {
         ready!(Pin::new(&mut self.sleep).poll(cx));
 
-        let timeout = self.sleep.deadline();
+        let deadline = self.sleep.deadline();
         let now = self.sleep.now();
 
-        let next_timeout = if now > timeout + Self::MISSED_TICK_GRACE_DELAY {
+        let next_deadline = if now > deadline + Self::MISSED_TICK_GRACE_DELAY {
             self.missed_tick_behavior
-                .next_timeout(timeout, now, self.period)
+                .next_deadline(deadline, now, self.period)
         } else {
-            timeout + self.period
+            deadline + self.period
         };
 
-        self.sleep.reset(next_timeout);
+        self.sleep.reset(next_deadline);
 
-        Poll::Ready(timeout)
+        Poll::Ready(deadline)
     }
 
     pub fn period(&self) -> Duration {
@@ -207,6 +207,26 @@ mod tests {
             driver.next_deadline(),
             Some(start + Duration::from_secs(25))
         );
+    }
+
+    #[test]
+    fn lateness_within_grace_keeps_regular_schedule() {
+        let (clock, mut driver, timer) = paused_timer_driver();
+        let start = timer.now();
+        let period = Duration::from_secs(10);
+        let mut interval = new_interval(timer, start, period);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        assert_eq!(interval.poll_tick(&mut noop_context()), Poll::Ready(start));
+
+        clock.advance(period + Interval::MISSED_TICK_GRACE_DELAY);
+
+        assert_eq!(
+            interval.poll_tick(&mut noop_context()),
+            Poll::Ready(start + period)
+        );
+        assert_eq!(interval.poll_tick(&mut noop_context()), Poll::Pending);
+        assert_eq!(driver.next_deadline(), Some(start + period + period));
     }
 
     #[test]
