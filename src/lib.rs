@@ -14,3 +14,4 @@ mod test_utils;
 pub use handle::{EnterGuard, Handle};
 pub use join::{JoinError, JoinHandle};
 pub use runtime::Runtime;
+pub use task::spawn;

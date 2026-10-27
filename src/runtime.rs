@@ -63,7 +63,10 @@ mod tests {
         time::Duration,
     };
 
-    use crate::time::{Elapsed, interval, sleep, timeout};
+    use crate::{
+        spawn,
+        time::{Elapsed, interval, sleep, timeout},
+    };
 
     use super::*;
 
@@ -101,17 +104,15 @@ mod tests {
     #[test]
     fn block_on_enters_runtime_context_for_spawned_tasks() {
         let mut runtime = Runtime::new();
-        let handle = runtime.handle();
-        let expected = handle.clone();
+        let expected = runtime.handle();
 
         let saw_expected_runtime = runtime.block_on(async move {
-            handle
-                .spawn(async move {
-                    let current = Handle::current();
-                    Rc::ptr_eq(&current.spawn_state, &expected.spawn_state)
-                })
-                .await
-                .unwrap()
+            spawn(async move {
+                let current = Handle::current();
+                Rc::ptr_eq(&current.spawn_state, &expected.spawn_state)
+            })
+            .await
+            .unwrap()
         });
 
         assert!(saw_expected_runtime);
@@ -231,12 +232,11 @@ mod tests {
         let shared_trace = Arc::new(Mutex::new(Vec::new()));
 
         let root = {
-            let handle = runtime.handle();
             let shared_trace = Arc::clone(&shared_trace);
 
             async move {
                 shared_trace.lock().unwrap().push("parent:start");
-                let child = handle.spawn({
+                let child = spawn({
                     let shared_trace = Arc::clone(&shared_trace);
 
                     async move {
@@ -368,7 +368,6 @@ mod tests {
         let clock = Clock::new_paused();
         let start = clock.now();
         let mut runtime = Runtime::with_clock(clock.clone());
-        let handle = runtime.handle();
         let trace = Rc::new(RefCell::new(Vec::new()));
 
         let root = {
@@ -376,7 +375,7 @@ mod tests {
             let root_trace = Rc::clone(&trace);
 
             async move {
-                handle.spawn(async move {
+                spawn(async move {
                     sleep(Duration::from_secs(5)).await;
                     child_trace.borrow_mut().push("short");
                 });
@@ -398,11 +397,10 @@ mod tests {
         let mut runtime = Runtime::default();
 
         let root = {
-            let handle = runtime.handle();
             let spawned_complete = Arc::clone(&spawned_complete);
 
             async move {
-                handle.spawn({
+                spawn({
                     async move {
                         spawned_complete.store(true, Ordering::SeqCst);
                     }
