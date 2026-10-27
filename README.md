@@ -107,17 +107,17 @@ polling and oversleeping a newly inserted earlier deadline.
 Concept: convenient APIs may discover the runtime they are executing on, but
 the ownership of tasks and resources must remain understandable.
 
-- [ ] Store the currently entered runtime handle in thread-local context.
-- [ ] Enter that context for the duration of `Runtime::block_on` and restore the
-  previous context afterward.
-- [ ] Add fallible and panicking ways to retrieve the current handle.
-- [ ] Add a free-standing `spawn` function that uses the current runtime.
-- [ ] Let `sleep`, `sleep_until`, and timeout functions use the current runtime
+- [x] Store the currently entered runtime handle in thread-local context.
+- [x] Enter that context for the duration of `Runtime::block_on` and clear the
+   context afterward.
+- [x] Add fallible and panicking ways to retrieve the current handle.
+- [x] Add a free-standing `spawn` function that uses the current runtime.
+- [x] Let `sleep`, `sleep_until`, and timeout functions use the current runtime
   without requiring an explicit handle.
-- [ ] Keep explicit handles available for code running outside an entered
+- [x] Keep explicit handles available for code running outside an entered
   runtime and for making ownership explicit.
-- [ ] Reject accidental nested runtimes for now, with a clear diagnostic.
-- [ ] Test context installation and restoration, access outside a runtime, and
+- [x] Reject accidental nested runtimes for now, with a clear diagnostic.
+- [x] Test context installation and restoration, access outside a runtime, and
   nested-runtime behavior.
 
 Completion check: explain when runtime context exists, why it is thread-local,
